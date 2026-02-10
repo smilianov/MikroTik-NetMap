@@ -1,0 +1,13 @@
+services:
+  netmap:
+    build: .
+    container_name: mikrotik-netmap
+    restart: unless-stopped
+    ports:
+      - "${NETMAP_PORT:-8585}:8585"
+    volumes:
+      - ./config:/app/config:ro
+    env_file:
+      - .env
+    environment:
+      - NETMAP_CONFIG=/app/config/netmap.yaml

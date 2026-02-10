@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+websockets>=14.0
+pyyaml>=6.0
+httpx>=0.28
+icmplib>=3.0
+pydantic>=2.10
+pydantic-settings>=2.7

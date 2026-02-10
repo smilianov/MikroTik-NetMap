@@ -1,0 +1,94 @@
+# MikroTik-NetMap Configuration
+# Copy to netmap.yaml and adjust for your network.
+# Secrets: use ${ENV_VAR} references — expanded at load time.
+
+server:
+  host: 0.0.0.0
+  port: 8585
+  cors_origins: ["*"]
+
+# Ping monitor settings
+ping:
+  interval: 2          # seconds between pings per device
+  timeout: 1           # seconds before ping considered lost
+
+# Graduated color thresholds (customisable)
+thresholds:
+  - max_seconds: 5
+    color: "#22C55E"    # green — online
+    label: "Online"
+  - max_seconds: 10
+    color: "#FFFF00"    # bright yellow
+    label: "Degraded"
+  - max_seconds: 15
+    color: "#FFD700"    # yellow
+    label: ""
+  - max_seconds: 20
+    color: "#FF8C00"    # bright orange
+    label: ""
+  - max_seconds: 25
+    color: "#FF6600"    # orange
+    label: ""
+  - max_seconds: 30
+    color: "#CC4400"    # dark orange
+    label: ""
+  - max_seconds: 180
+    color: "#EF4444"    # red — down
+    label: "Down"
+
+# RouterOS API defaults (applied to devices that don't override)
+api_defaults:
+  username: admin
+  api_type: rest
+  port: 443
+
+# Device definitions
+devices:
+  - name: core-router
+    host: 10.0.0.1
+    type: router
+    profile: ccr
+    password: "${CORE_ROUTER_PASS}"
+    map: main
+    position: {x: 400, y: 200}
+
+  - name: rack-switch-1
+    host: 10.0.0.2
+    type: switch
+    profile: crs
+    password: "${SWITCH_PASS}"
+    map: main
+    position: {x: 400, y: 400}
+
+  - name: branch-router
+    host: 10.0.1.1
+    type: router
+    profile: edge
+    password: "${BRANCH_PASS}"
+    map: main
+    position: {x: 700, y: 200}
+
+# Map definitions (hierarchy)
+maps:
+  - name: main
+    label: "Network Overview"
+
+# Manual link definitions (auto-discovery fills the rest)
+links:
+  - from: core-router:ether1
+    to: rack-switch-1:sfp-sfpplus1
+    speed: 10000      # 10G
+    type: wired
+
+  - from: core-router:ether2
+    to: branch-router:ether1
+    speed: 1000       # 1G
+    type: wired
+
+# Auto-discovery settings
+discovery:
+  enabled: true
+  interval: 300        # re-discover every 5 minutes
+  protocols: [mndp, lldp]
+  auto_add_devices: false
+  auto_add_links: true

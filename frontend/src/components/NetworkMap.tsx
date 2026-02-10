@@ -1,0 +1,247 @@
+/**
+ * Main network topology map using vis-network.
+ * Renders devices as nodes and links as edges with real-time color updates.
+ */
+
+import { useEffect, useRef, useCallback } from 'react';
+import { Network, DataSet } from 'vis-network/standalone';
+import { useNetworkStore } from '../stores/networkStore';
+import { getPingColor } from '../utils/colorThresholds';
+
+/** vis-network shape per device type. */
+const DEVICE_SHAPES: Record<string, string> = {
+  router: 'diamond',
+  switch: 'box',
+  ap: 'triangle',
+  server: 'square',
+  other: 'dot',
+};
+
+/** Link dash pattern per link type. */
+const LINK_DASHES: Record<string, boolean | number[]> = {
+  wired: false,
+  wireless: [10, 10],
+  vpn: [4, 4],
+};
+
+/** Link width based on speed (Mbps). */
+function linkWidth(speed: number): number {
+  if (speed >= 25000) return 6;
+  if (speed >= 10000) return 4;
+  if (speed >= 1000) return 2.5;
+  return 1.5;
+}
+
+export function NetworkMap() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const networkRef = useRef<Network | null>(null);
+  const nodesRef = useRef<DataSet<any>>(new DataSet());
+  const edgesRef = useRef<DataSet<any>>(new DataSet());
+  const animFrameRef = useRef<number>(0);
+
+  const { devices, links, pingData, thresholds, selectDevice } = useNetworkStore();
+
+  // Initialize vis-network on mount.
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const options = {
+      physics: {
+        enabled: false, // Use fixed positions from config
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        zoomView: true,
+        dragView: true,
+      },
+      nodes: {
+        font: {
+          size: 14,
+          face: 'Inter, system-ui, sans-serif',
+          color: '#E5E7EB',
+          multi: 'html',
+        },
+        borderWidth: 3,
+        shadow: {
+          enabled: true,
+          color: 'rgba(0,0,0,0.3)',
+          size: 10,
+        },
+        scaling: { min: 30, max: 50 },
+      },
+      edges: {
+        color: { color: '#4B5563', hover: '#9CA3AF', highlight: '#60A5FA' },
+        smooth: { enabled: true, type: 'continuous', roundness: 0.2 },
+        font: {
+          size: 11,
+          color: '#9CA3AF',
+          strokeWidth: 3,
+          strokeColor: '#1F2937',
+          align: 'top',
+        },
+      },
+    };
+
+    const network = new Network(
+      containerRef.current,
+      { nodes: nodesRef.current, edges: edgesRef.current },
+      options,
+    );
+
+    // Double-click → select device for detail panel.
+    network.on('doubleClick', (params) => {
+      if (params.nodes.length > 0) {
+        selectDevice(params.nodes[0]);
+      }
+    });
+
+    // Single click → highlight.
+    network.on('click', (params) => {
+      if (params.nodes.length === 0) {
+        selectDevice(null);
+      }
+    });
+
+    networkRef.current = network;
+
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      network.destroy();
+    };
+  }, [selectDevice]);
+
+  // Sync devices → vis nodes when config changes.
+  useEffect(() => {
+    const nodes = nodesRef.current;
+    const existingIds = new Set(nodes.getIds());
+    const configIds = new Set(devices.map((d) => d.id));
+
+    // Add or update nodes.
+    for (const dev of devices) {
+      const ping = pingData[dev.id];
+      const color = getPingColor(ping?.lastSeen ?? null, thresholds);
+
+      const nodeData = {
+        id: dev.id,
+        label: `<b>${dev.name}</b>\n${dev.host}`,
+        shape: DEVICE_SHAPES[dev.type] || 'dot',
+        x: dev.position.x,
+        y: dev.position.y,
+        color: {
+          background: color,
+          border: color,
+          highlight: { background: color, border: '#FFFFFF' },
+          hover: { background: color, border: '#FFFFFF' },
+        },
+        size: 30,
+        title: `${dev.name} (${dev.host})\nType: ${dev.type}\nProfile: ${dev.profile}`,
+      };
+
+      if (existingIds.has(dev.id)) {
+        nodes.update(nodeData);
+      } else {
+        nodes.add(nodeData);
+      }
+    }
+
+    // Remove nodes no longer in config.
+    for (const id of existingIds) {
+      if (!configIds.has(id as string)) {
+        nodes.remove(id);
+      }
+    }
+  }, [devices, thresholds]); // Don't include pingData here — handled by animation loop.
+
+  // Sync links → vis edges.
+  useEffect(() => {
+    const edges = edgesRef.current;
+    edges.clear();
+
+    for (const link of links) {
+      // Extract device names from "device:interface" format.
+      const fromDev = link.from.split(':')[0];
+      const toDev = link.to.split(':')[0];
+      const fromIf = link.from.split(':')[1] || '';
+      const toIf = link.to.split(':')[1] || '';
+
+      edges.add({
+        id: `${link.from}-${link.to}`,
+        from: fromDev,
+        to: toDev,
+        width: linkWidth(link.speed),
+        dashes: LINK_DASHES[link.type] ?? false,
+        label: `${link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`}`,
+        title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps`,
+      });
+    }
+  }, [links]);
+
+  // Animation loop: update node colors at ~10fps from pingData.
+  const updateColors = useCallback(() => {
+    const nodes = nodesRef.current;
+
+    for (const dev of devices) {
+      const ping = pingData[dev.id];
+      const color = getPingColor(ping?.lastSeen ?? null, thresholds);
+      const rtt = ping?.rttMs;
+      const lastSeen = ping?.lastSeen;
+
+      // Compute uptime/downtime label.
+      let statusLine = '';
+      if (lastSeen) {
+        const elapsed = (Date.now() - new Date(lastSeen).getTime()) / 1000;
+        if (elapsed <= 5) {
+          statusLine = rtt !== null && rtt !== undefined ? `${rtt.toFixed(1)} ms` : '';
+        } else if (elapsed < 60) {
+          statusLine = `Missing: ${Math.round(elapsed)}s`;
+        } else if (elapsed < 3600) {
+          statusLine = `Missing: ${Math.round(elapsed / 60)}m`;
+        } else {
+          statusLine = `Missing: ${Math.round(elapsed / 3600)}h`;
+        }
+      } else {
+        statusLine = 'Never seen';
+      }
+
+      nodes.update({
+        id: dev.id,
+        label: `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`,
+        color: {
+          background: color,
+          border: color,
+          highlight: { background: color, border: '#FFFFFF' },
+          hover: { background: color, border: '#FFFFFF' },
+        },
+      });
+    }
+
+    animFrameRef.current = requestAnimationFrame(() => {
+      // Update at ~10fps (every 100ms) instead of 60fps to reduce CPU.
+      setTimeout(() => {
+        animFrameRef.current = requestAnimationFrame(updateColors);
+      }, 100);
+    });
+  }, [devices, pingData, thresholds]);
+
+  // Start/restart animation loop when dependencies change.
+  useEffect(() => {
+    cancelAnimationFrame(animFrameRef.current);
+    if (devices.length > 0) {
+      animFrameRef.current = requestAnimationFrame(updateColors);
+    }
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [updateColors]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        background: '#111827',
+        borderRadius: '8px',
+      }}
+    />
+  );
+}
