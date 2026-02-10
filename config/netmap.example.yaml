@@ -37,10 +37,11 @@ thresholds:
     label: "Down"
 
 # RouterOS API defaults (applied to devices that don't override)
+# api_type: "rest" (HTTPS port 443, RouterOS 7.1+) or "classic" (port 8728, RouterOS 6.49+)
 api_defaults:
   username: admin
-  api_type: rest
-  port: 443
+  api_type: classic          # "rest" for HTTPS/443 or "classic" for port 8728
+  port: 8728
 
 # Device definitions
 devices:
@@ -86,9 +87,11 @@ links:
     type: wired
 
 # Auto-discovery settings
+# Queries /ip/neighbor on devices that have API credentials (password set).
+# Discovered topology is persisted to config/discovered_topology.json.
 discovery:
-  enabled: true
-  interval: 300        # re-discover every 5 minutes
-  protocols: [mndp, lldp]
-  auto_add_devices: false
-  auto_add_links: true
+  enabled: true          # enable MNDP/LLDP neighbor discovery
+  interval: 300          # re-discover every N seconds (default: 300 = 5 min)
+  protocols: [mndp, lldp]  # neighbor protocols (informational — RouterOS reports all)
+  auto_add_devices: false   # if true, unknown neighbors are added to the map
+  auto_add_links: true      # if true, discovered links appear on the map

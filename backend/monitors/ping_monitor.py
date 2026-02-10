@@ -101,6 +101,19 @@ class PingMonitor:
         self._running = True
         self._task = asyncio.create_task(self._loop())
 
+    def add_device(self, device: DeviceConfig) -> None:
+        """Dynamically add a device to the ping cycle (used by topology discovery)."""
+        if device.name not in self.states:
+            self.devices.append(device)
+            self.states[device.name] = PingState(device_id=device.name)
+            logger.info("PingMonitor: added device %s (%s)", device.name, device.host)
+
+    def remove_device(self, device_id: str) -> None:
+        """Remove a device from the ping cycle."""
+        self.devices = [d for d in self.devices if d.name != device_id]
+        self.states.pop(device_id, None)
+        logger.info("PingMonitor: removed device %s", device_id)
+
     async def stop(self) -> None:
         """Stop the ping monitor."""
         self._running = False

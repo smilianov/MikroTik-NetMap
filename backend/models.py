@@ -100,6 +100,36 @@ class DeviceDetail(BaseModel):
     interfaces: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DiscoveredDevice(BaseModel):
+    """Device found via MNDP/LLDP neighbor discovery."""
+
+    name: str
+    host: str
+    mac: str = ""
+    platform: str = ""
+    board: str = ""
+    discovered_by: str  # which configured device found it
+    discovered_on: str  # interface on the discovering device
+    first_seen: datetime
+    last_seen: datetime
+    position: Position = Field(default_factory=Position)
+
+
+class DiscoveredLink(BaseModel):
+    """Link discovered from neighbor tables."""
+
+    id: str  # "deviceA:if1-deviceB:if2"
+    from_device: str = Field(alias="from")
+    to_device: str = Field(alias="to")
+    speed: int = 1000
+    type: LinkType = LinkType.WIRED
+    discovered: bool = True
+    first_seen: datetime
+    last_seen: datetime
+
+    model_config = {"populate_by_name": True}
+
+
 class WSMessage(BaseModel):
     """WebSocket message envelope."""
 

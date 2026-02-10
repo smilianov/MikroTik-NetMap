@@ -46,6 +46,11 @@ interface NetworkState {
   // Actions.
   setConfig: (devices: DeviceInfo[], links: LinkInfo[], thresholds: Threshold[]) => void;
   updatePingState: (devices: PingData[]) => void;
+  mergeTopology: (
+    addedDevices: DeviceInfo[],
+    addedLinks: LinkInfo[],
+    removedLinks: string[],
+  ) => void;
   selectDevice: (deviceId: string | null) => void;
   setCurrentMap: (mapName: string) => void;
   setWsConnected: (connected: boolean) => void;
@@ -74,6 +79,32 @@ export const useNetworkStore = create<NetworkState>((set) => ({
         updated[d.id] = d;
       }
       return { pingData: updated };
+    }),
+
+  mergeTopology: (addedDevices, addedLinks, removedLinks) =>
+    set((state) => {
+      // Merge new devices (skip duplicates).
+      const existingIds = new Set(state.devices.map((d) => d.id));
+      const newDevices = addedDevices.filter((d) => !existingIds.has(d.id));
+
+      // Build a set of removed link IDs for filtering.
+      const removedSet = new Set(removedLinks);
+
+      // Remove old links and add new ones.
+      const filteredLinks = state.links.filter(
+        (l) => !removedSet.has(`${l.from}-${l.to}`),
+      );
+
+      // Deduplicate added links.
+      const existingLinkKeys = new Set(filteredLinks.map((l) => `${l.from}-${l.to}`));
+      const newLinks = addedLinks.filter(
+        (l) => !existingLinkKeys.has(`${l.from}-${l.to}`),
+      );
+
+      return {
+        devices: [...state.devices, ...newDevices],
+        links: [...filteredLinks, ...newLinks],
+      };
     }),
 
   selectDevice: (deviceId) => set({ selectedDevice: deviceId }),

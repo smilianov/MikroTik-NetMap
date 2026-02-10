@@ -12,7 +12,7 @@ const RECONNECT_DELAY = 3000;
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
-  const { setConfig, updatePingState, setWsConnected } = useNetworkStore();
+  const { setConfig, updatePingState, mergeTopology, setWsConnected } = useNetworkStore();
 
   useEffect(() => {
     function connect() {
@@ -82,6 +82,27 @@ export function useWebSocket() {
             })),
           );
           break;
+
+        case 'topology_update':
+          mergeTopology(
+            (msg.added_devices || []).map((d: any) => ({
+              id: d.id,
+              name: d.name,
+              host: d.host,
+              type: d.type,
+              profile: d.profile || 'edge',
+              map: d.map || 'main',
+              position: d.position || { x: 0, y: 0 },
+            })),
+            (msg.added_links || []).map((l: any) => ({
+              from: l.from,
+              to: l.to,
+              speed: l.speed,
+              type: l.type,
+            })),
+            msg.removed_links || [],
+          );
+          break;
       }
     }
 
@@ -101,5 +122,5 @@ export function useWebSocket() {
       }
       wsRef.current?.close();
     };
-  }, [setConfig, updatePingState, setWsConnected]);
+  }, [setConfig, updatePingState, mergeTopology, setWsConnected]);
 }

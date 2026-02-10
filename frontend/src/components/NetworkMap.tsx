@@ -1,21 +1,14 @@
 /**
  * Main network topology map using vis-network.
- * Renders devices as nodes and links as edges with real-time color updates.
+ * Renders devices as image nodes with status-indicator dots
+ * and links as edges with real-time updates.
  */
 
 import { useEffect, useRef, useCallback } from 'react';
 import { Network, DataSet } from 'vis-network/standalone';
 import { useNetworkStore } from '../stores/networkStore';
 import { getPingColor } from '../utils/colorThresholds';
-
-/** vis-network shape per device type. */
-const DEVICE_SHAPES: Record<string, string> = {
-  router: 'diamond',
-  switch: 'box',
-  ap: 'triangle',
-  server: 'square',
-  other: 'dot',
-};
+import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
 
 /** Link dash pattern per link type. */
 const LINK_DASHES: Record<string, boolean | number[]> = {
@@ -41,6 +34,13 @@ export function NetworkMap() {
 
   const { devices, links, pingData, thresholds, selectDevice } = useNetworkStore();
 
+  // Pre-warm image cache with all threshold colors.
+  useEffect(() => {
+    const colors = thresholds.map((t) => t.color);
+    colors.push('#6B7280'); // unknown/grey
+    preloadDeviceImages(colors);
+  }, [thresholds]);
+
   // Initialize vis-network on mount.
   useEffect(() => {
     if (!containerRef.current) return;
@@ -57,18 +57,23 @@ export function NetworkMap() {
       },
       nodes: {
         font: {
-          size: 14,
+          size: 13,
           face: 'Inter, system-ui, sans-serif',
           color: '#E5E7EB',
           multi: 'html',
         },
-        borderWidth: 3,
+        borderWidth: 0,
+        shapeProperties: {
+          useBorderWithImage: false,
+          useImageSize: false,
+        },
         shadow: {
           enabled: true,
-          color: 'rgba(0,0,0,0.3)',
-          size: 10,
+          color: 'rgba(0,0,0,0.4)',
+          size: 8,
+          x: 2,
+          y: 2,
         },
-        scaling: { min: 30, max: 50 },
       },
       edges: {
         color: { color: '#4B5563', hover: '#9CA3AF', highlight: '#60A5FA' },
@@ -96,7 +101,7 @@ export function NetworkMap() {
       }
     });
 
-    // Single click → highlight.
+    // Single click → deselect.
     network.on('click', (params) => {
       if (params.nodes.length === 0) {
         selectDevice(null);
@@ -117,24 +122,19 @@ export function NetworkMap() {
     const existingIds = new Set(nodes.getIds());
     const configIds = new Set(devices.map((d) => d.id));
 
-    // Add or update nodes.
     for (const dev of devices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
+      const imageUrl = getDeviceImageUrl(dev.type, color);
 
       const nodeData = {
         id: dev.id,
         label: `<b>${dev.name}</b>\n${dev.host}`,
-        shape: DEVICE_SHAPES[dev.type] || 'dot',
+        shape: 'image',
+        image: imageUrl,
+        size: 32,
         x: dev.position.x,
         y: dev.position.y,
-        color: {
-          background: color,
-          border: color,
-          highlight: { background: color, border: '#FFFFFF' },
-          hover: { background: color, border: '#FFFFFF' },
-        },
-        size: 30,
         title: `${dev.name} (${dev.host})\nType: ${dev.type}\nProfile: ${dev.profile}`,
       };
 
@@ -151,7 +151,7 @@ export function NetworkMap() {
         nodes.remove(id);
       }
     }
-  }, [devices, thresholds]); // Don't include pingData here — handled by animation loop.
+  }, [devices, thresholds]); // Don't include pingData — handled by animation loop.
 
   // Sync links → vis edges.
   useEffect(() => {
@@ -159,7 +159,6 @@ export function NetworkMap() {
     edges.clear();
 
     for (const link of links) {
-      // Extract device names from "device:interface" format.
       const fromDev = link.from.split(':')[0];
       const toDev = link.to.split(':')[0];
       const fromIf = link.from.split(':')[1] || '';
@@ -177,13 +176,14 @@ export function NetworkMap() {
     }
   }, [links]);
 
-  // Animation loop: update node colors at ~10fps from pingData.
-  const updateColors = useCallback(() => {
+  // Animation loop: update node images at ~10fps from pingData.
+  const updateNodes = useCallback(() => {
     const nodes = nodesRef.current;
 
     for (const dev of devices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
+      const imageUrl = getDeviceImageUrl(dev.type, color);
       const rtt = ping?.rttMs;
       const lastSeen = ping?.lastSeen;
 
@@ -207,19 +207,13 @@ export function NetworkMap() {
       nodes.update({
         id: dev.id,
         label: `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`,
-        color: {
-          background: color,
-          border: color,
-          highlight: { background: color, border: '#FFFFFF' },
-          hover: { background: color, border: '#FFFFFF' },
-        },
+        image: imageUrl,
       });
     }
 
     animFrameRef.current = requestAnimationFrame(() => {
-      // Update at ~10fps (every 100ms) instead of 60fps to reduce CPU.
       setTimeout(() => {
-        animFrameRef.current = requestAnimationFrame(updateColors);
+        animFrameRef.current = requestAnimationFrame(updateNodes);
       }, 100);
     });
   }, [devices, pingData, thresholds]);
@@ -228,10 +222,10 @@ export function NetworkMap() {
   useEffect(() => {
     cancelAnimationFrame(animFrameRef.current);
     if (devices.length > 0) {
-      animFrameRef.current = requestAnimationFrame(updateColors);
+      animFrameRef.current = requestAnimationFrame(updateNodes);
     }
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [updateColors]);
+  }, [updateNodes]);
 
   return (
     <div

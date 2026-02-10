@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,8 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from api.devices import router as devices_router, set_app_state
 from api.websocket import ConnectionManager
 from config import NetMapConfig
-from models import PingState
+from models import DeviceConfig, DeviceType, PingState
 from monitors.ping_monitor import PingMonitor
+from monitors.topology_discovery import TopologyDiscovery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +37,89 @@ ws_manager = ConnectionManager()
 app_state: dict = {}
 
 
+def _build_all_devices_list() -> list[dict[str, Any]]:
+    """Build the combined device list (config + discovered) for WebSocket."""
+    cfg = app_state.get("config")
+    discovery = app_state.get("topology_discovery")
+    if not cfg:
+        return []
+
+    devices = [
+        {
+            "id": d.name,
+            "name": d.name,
+            "host": d.host,
+            "type": d.type.value,
+            "profile": d.profile,
+            "map": d.map,
+            "position": {"x": d.position.x, "y": d.position.y},
+        }
+        for d in cfg.devices
+    ]
+
+    if discovery:
+        for dd in discovery.discovered_devices.values():
+            # Don't duplicate devices already in config.
+            if any(d["id"] == dd.name for d in devices):
+                continue
+            devices.append({
+                "id": dd.name,
+                "name": dd.name,
+                "host": dd.host,
+                "type": _infer_type_str(dd.board, dd.platform),
+                "profile": "edge",
+                "map": "main",
+                "position": {"x": dd.position.x, "y": dd.position.y},
+                "discovered": True,
+            })
+
+    return devices
+
+
+def _build_all_links_list() -> list[dict[str, Any]]:
+    """Build the combined link list (config + discovered) for WebSocket."""
+    cfg = app_state.get("config")
+    discovery = app_state.get("topology_discovery")
+    if not cfg:
+        return []
+
+    links = [
+        {
+            "from": ln.from_device,
+            "to": ln.to_device,
+            "speed": ln.speed,
+            "type": ln.type.value,
+        }
+        for ln in cfg.links
+    ]
+
+    if discovery:
+        for dl in discovery.discovered_links.values():
+            links.append({
+                "from": dl.from_device,
+                "to": dl.to_device,
+                "speed": dl.speed,
+                "type": dl.type.value,
+                "discovered": True,
+            })
+
+    return links
+
+
+def _infer_type_str(board: str, platform: str) -> str:
+    """Infer device type string from board/platform."""
+    b = board.lower()
+    if "ccr" in b or "rb" in b or "hex" in b or "hap" in b:
+        return DeviceType.ROUTER.value
+    if "crs" in b or "css" in b:
+        return DeviceType.SWITCH.value
+    if "cap" in b or "wap" in b or "cube" in b or "disc" in b:
+        return DeviceType.AP.value
+    if platform.lower() != "mikrotik":
+        return DeviceType.OTHER.value
+    return DeviceType.ROUTER.value
+
+
 async def _on_ping_update(states: list[PingState]) -> None:
     """Called by PingMonitor after every sweep — broadcasts to WebSocket clients."""
     await ws_manager.broadcast({
@@ -50,6 +134,55 @@ async def _on_ping_update(states: list[PingState]) -> None:
             }
             for s in states
         ],
+    })
+
+
+async def _on_topology_update(changes: dict[str, Any]) -> None:
+    """Called by TopologyDiscovery when topology changes are detected."""
+    added_devices = changes.get("added_devices", [])
+    added_links = changes.get("added_links", [])
+    removed_links = changes.get("removed_links", [])
+
+    # Add newly discovered devices to the ping monitor.
+    ping = app_state.get("ping_monitor")
+    if ping and added_devices:
+        for dd in added_devices:
+            dev_config = DeviceConfig(
+                name=dd.name,
+                host=dd.host,
+                type=DeviceType(_infer_type_str(dd.board, dd.platform)),
+                position=dd.position,
+            )
+            ping.add_device(dev_config)
+
+    # Broadcast topology update to all WebSocket clients.
+    await ws_manager.broadcast({
+        "type": "topology_update",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "added_devices": [
+            {
+                "id": dd.name,
+                "name": dd.name,
+                "host": dd.host,
+                "type": _infer_type_str(dd.board, dd.platform),
+                "profile": "edge",
+                "map": "main",
+                "position": {"x": dd.position.x, "y": dd.position.y},
+                "discovered": True,
+            }
+            for dd in added_devices
+        ],
+        "added_links": [
+            {
+                "from": dl.from_device,
+                "to": dl.to_device,
+                "speed": dl.speed,
+                "type": dl.type.value,
+                "discovered": True,
+            }
+            for dl in added_links
+        ],
+        "removed_links": removed_links,
     })
 
 
@@ -79,6 +212,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ping.start()
     app_state["ping_monitor"] = ping
 
+    # Start topology discovery (if enabled and any device has credentials).
+    discovery = None
+    devices_with_creds = [d for d in cfg.devices if d.password]
+    if cfg.discovery_enabled and devices_with_creds:
+        discovery = TopologyDiscovery(
+            devices=cfg.devices,
+            interval=cfg.discovery_interval,
+            auto_add_devices=cfg.discovery_auto_add_devices,
+            auto_add_links=cfg.discovery_auto_add_links,
+            on_update=_on_topology_update,
+        )
+        discovery.start()
+        app_state["topology_discovery"] = discovery
+        logger.info(
+            "TopologyDiscovery enabled: %d devices with credentials, interval=%ds",
+            len(devices_with_creds),
+            cfg.discovery_interval,
+        )
+    else:
+        if not cfg.discovery_enabled:
+            logger.info("TopologyDiscovery disabled in config")
+        elif not devices_with_creds:
+            logger.info("TopologyDiscovery skipped: no devices have API credentials")
+
     # Share state with API routers.
     set_app_state(app_state)
 
@@ -86,13 +243,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown.
+    if discovery:
+        await discovery.stop()
     await ping.stop()
     logger.info("MikroTik-NetMap stopped")
 
 
 app = FastAPI(
     title="MikroTik-NetMap",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -110,7 +269,7 @@ app.include_router(devices_router)
 
 @app.get("/api/config")
 async def get_config():
-    """Return thresholds and map definitions for the frontend."""
+    """Return thresholds, maps, devices, and links (including discovered)."""
     cfg = app_state.get("config")
     if not cfg:
         return {}
@@ -123,15 +282,7 @@ async def get_config():
             {"name": m.name, "label": m.label, "parent": m.parent, "background": m.background}
             for m in cfg.maps
         ],
-        "links": [
-            {
-                "from": ln.from_device,
-                "to": ln.to_device,
-                "speed": ln.speed,
-                "type": ln.type.value,
-            }
-            for ln in cfg.links
-        ],
+        "links": _build_all_links_list(),
     }
 
 
@@ -140,17 +291,21 @@ async def health():
     """Health check endpoint."""
     cfg = app_state.get("config")
     ping = app_state.get("ping_monitor")
+    discovery = app_state.get("topology_discovery")
     return {
         "status": "ok",
         "devices": len(cfg.devices) if cfg else 0,
         "ws_clients": ws_manager.client_count,
         "ping_running": ping is not None and ping._running,
+        "discovery_running": discovery is not None and discovery._running,
+        "discovered_devices": len(discovery.discovered_devices) if discovery else 0,
+        "discovered_links": len(discovery.discovered_links) if discovery else 0,
     }
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    """WebSocket endpoint for real-time ping state updates."""
+    """WebSocket endpoint for real-time state updates."""
     await ws_manager.connect(ws)
 
     # Send initial full state on connect.
@@ -170,7 +325,7 @@ async def websocket_endpoint(ws: WebSocket):
             ],
         })
 
-    # Send config (thresholds, maps) so frontend knows how to render.
+    # Send config (thresholds, maps, devices, links — including discovered).
     cfg = app_state.get("config")
     if cfg:
         await ws.send_json({
@@ -179,27 +334,8 @@ async def websocket_endpoint(ws: WebSocket):
                 {"max_seconds": t.max_seconds, "color": t.color, "label": t.label}
                 for t in cfg.thresholds
             ],
-            "devices": [
-                {
-                    "id": d.name,
-                    "name": d.name,
-                    "host": d.host,
-                    "type": d.type.value,
-                    "profile": d.profile,
-                    "map": d.map,
-                    "position": {"x": d.position.x, "y": d.position.y},
-                }
-                for d in cfg.devices
-            ],
-            "links": [
-                {
-                    "from": ln.from_device,
-                    "to": ln.to_device,
-                    "speed": ln.speed,
-                    "type": ln.type.value,
-                }
-                for ln in cfg.links
-            ],
+            "devices": _build_all_devices_list(),
+            "links": _build_all_links_list(),
         })
 
     try:

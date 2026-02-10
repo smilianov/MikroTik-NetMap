@@ -105,3 +105,5 @@ class NetMapConfig:
         self.discovery_enabled: bool = discovery.get("enabled", True)
         self.discovery_interval: int = discovery.get("interval", 300)
         self.discovery_auto_add_links: bool = discovery.get("auto_add_links", True)
+        self.discovery_auto_add_devices: bool = discovery.get("auto_add_devices", False)
+        self.discovery_protocols: list[str] = discovery.get("protocols", ["mndp", "lldp"])
