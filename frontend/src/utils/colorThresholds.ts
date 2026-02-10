@@ -85,3 +85,27 @@ export function getPulseSpeed(lastSeen: string | null): string | null {
   if (elapsedSec <= 180) return '0.3s';
   return null; // solid red, no pulse
 }
+
+/** Default edge colour (no traffic data). */
+const EDGE_IDLE_COLOR = '#4B5563';
+
+/** Traffic utilisation colour bands. */
+const TRAFFIC_COLORS: { maxPct: number; color: string }[] = [
+  { maxPct: 1, color: EDGE_IDLE_COLOR },
+  { maxPct: 25, color: '#22C55E' },
+  { maxPct: 50, color: '#FFFF00' },
+  { maxPct: 75, color: '#FF8C00' },
+  { maxPct: 100, color: '#EF4444' },
+];
+
+/**
+ * Get edge colour based on traffic utilisation percentage (0-100+).
+ * 0% → grey, 1-25% → green, 25-50% → yellow, 50-75% → orange, 75%+ → red.
+ */
+export function getTrafficColor(utilizationPct: number): string {
+  if (utilizationPct <= 0) return EDGE_IDLE_COLOR;
+  for (const band of TRAFFIC_COLORS) {
+    if (utilizationPct <= band.maxPct) return band.color;
+  }
+  return TRAFFIC_COLORS[TRAFFIC_COLORS.length - 1].color;
+}

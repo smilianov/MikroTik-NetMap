@@ -11,6 +11,8 @@ frontend/dist/
 
 # Config with secrets
 config/netmap.yaml
+config/custom_positions.json
+config/discovered_topology.json
 .env
 
 # IDE

@@ -9,10 +9,27 @@ import { useNetworkStore } from '../stores/networkStore';
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 const RECONNECT_DELAY = 3000;
 
+/** Module-level send function — set when WebSocket is open. */
+let _wsSendFn: ((data: string) => void) | null = null;
+
+/** Send a JSON message to the backend via WebSocket. */
+export function sendWsMessage(msg: object): void {
+  if (_wsSendFn) {
+    _wsSendFn(JSON.stringify(msg));
+  }
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
-  const { setConfig, updatePingState, mergeTopology, setWsConnected } = useNetworkStore();
+  const {
+    setConfig,
+    updatePingState,
+    updateTraffic,
+    updateDevicePosition,
+    mergeTopology,
+    setWsConnected,
+  } = useNetworkStore();
 
   useEffect(() => {
     function connect() {
@@ -22,6 +39,7 @@ export function useWebSocket() {
       ws.onopen = () => {
         console.log('[WS] Connected');
         setWsConnected(true);
+        _wsSendFn = (data) => ws.send(data);
       };
 
       ws.onmessage = (event) => {
@@ -36,6 +54,7 @@ export function useWebSocket() {
       ws.onclose = () => {
         console.log('[WS] Disconnected, reconnecting...');
         setWsConnected(false);
+        _wsSendFn = null;
         scheduleReconnect();
       };
 
@@ -103,6 +122,28 @@ export function useWebSocket() {
             msg.removed_links || [],
           );
           break;
+
+        case 'traffic_state':
+          updateTraffic(
+            Object.fromEntries(
+              Object.entries(msg.interfaces || {}).map(
+                ([deviceId, ifaces]: [string, any]) => [
+                  deviceId,
+                  Object.fromEntries(
+                    Object.entries(ifaces).map(([ifName, stats]: [string, any]) => [
+                      ifName,
+                      { rxBps: stats.rx_bps, txBps: stats.tx_bps },
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+          );
+          break;
+
+        case 'position_update':
+          updateDevicePosition(msg.device_id, msg.position);
+          break;
       }
     }
 
@@ -120,7 +161,8 @@ export function useWebSocket() {
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
       }
+      _wsSendFn = null;
       wsRef.current?.close();
     };
-  }, [setConfig, updatePingState, mergeTopology, setWsConnected]);
+  }, [setConfig, updatePingState, updateTraffic, updateDevicePosition, mergeTopology, setWsConnected]);
 }

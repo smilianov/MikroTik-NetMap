@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -20,6 +21,7 @@ from config import NetMapConfig
 from models import DeviceConfig, DeviceType, PingState
 from monitors.ping_monitor import PingMonitor
 from monitors.topology_discovery import TopologyDiscovery
+from monitors.traffic_monitor import TrafficMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,32 +38,61 @@ CONFIG_PATH = os.environ.get(
 ws_manager = ConnectionManager()
 app_state: dict = {}
 
+# Custom device positions file (drag-to-reposition persistence).
+CUSTOM_POSITIONS_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "custom_positions.json"
+)
+
+
+def _load_custom_positions() -> dict[str, dict[str, float]]:
+    """Load custom device positions from JSON file."""
+    if not CUSTOM_POSITIONS_FILE.exists():
+        return {}
+    try:
+        with open(CUSTOM_POSITIONS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load custom positions", exc_info=True)
+        return {}
+
+
+def _save_custom_positions(positions: dict[str, dict[str, float]]) -> None:
+    """Save custom device positions to JSON file."""
+    try:
+        CUSTOM_POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CUSTOM_POSITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(positions, f, indent=2)
+    except Exception:
+        logger.warning("Failed to save custom positions", exc_info=True)
+
 
 def _build_all_devices_list() -> list[dict[str, Any]]:
     """Build the combined device list (config + discovered) for WebSocket."""
     cfg = app_state.get("config")
     discovery = app_state.get("topology_discovery")
+    custom_pos = app_state.get("custom_positions", {})
     if not cfg:
         return []
 
-    devices = [
-        {
+    devices = []
+    for d in cfg.devices:
+        pos = custom_pos.get(d.name, {"x": d.position.x, "y": d.position.y})
+        devices.append({
             "id": d.name,
             "name": d.name,
             "host": d.host,
             "type": d.type.value,
             "profile": d.profile,
             "map": d.map,
-            "position": {"x": d.position.x, "y": d.position.y},
-        }
-        for d in cfg.devices
-    ]
+            "position": pos,
+        })
 
     if discovery:
         for dd in discovery.discovered_devices.values():
             # Don't duplicate devices already in config.
             if any(d["id"] == dd.name for d in devices):
                 continue
+            pos = custom_pos.get(dd.name, {"x": dd.position.x, "y": dd.position.y})
             devices.append({
                 "id": dd.name,
                 "name": dd.name,
@@ -69,7 +100,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
                 "map": "main",
-                "position": {"x": dd.position.x, "y": dd.position.y},
+                "position": pos,
                 "discovered": True,
             })
 
@@ -186,6 +217,17 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
     })
 
 
+async def _on_traffic_update(
+    traffic_data: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    """Called by TrafficMonitor after every sweep — broadcasts to WebSocket clients."""
+    await ws_manager.broadcast({
+        "type": "traffic_state",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "interfaces": traffic_data,
+    })
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start background monitors on app startup, stop on shutdown."""
@@ -236,6 +278,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         elif not devices_with_creds:
             logger.info("TopologyDiscovery skipped: no devices have API credentials")
 
+    # Load custom device positions (from drag-to-reposition).
+    custom_positions = _load_custom_positions()
+    app_state["custom_positions"] = custom_positions
+    if custom_positions:
+        logger.info("Loaded custom positions for %d devices", len(custom_positions))
+
+    # Start traffic monitor (if enabled and any device has credentials).
+    traffic = None
+    if cfg.traffic_enabled and devices_with_creds:
+        traffic = TrafficMonitor(
+            devices=cfg.devices,
+            interval=cfg.traffic_interval,
+            on_update=_on_traffic_update,
+        )
+        traffic.start()
+        app_state["traffic_monitor"] = traffic
+        logger.info(
+            "TrafficMonitor enabled: %d devices with credentials, interval=%ds",
+            len(devices_with_creds),
+            cfg.traffic_interval,
+        )
+    else:
+        if not cfg.traffic_enabled:
+            logger.info("TrafficMonitor disabled in config")
+        elif not devices_with_creds:
+            logger.info("TrafficMonitor skipped: no devices have API credentials")
+
     # Share state with API routers.
     set_app_state(app_state)
 
@@ -243,6 +312,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown.
+    if traffic:
+        await traffic.stop()
     if discovery:
         await discovery.stop()
     await ping.stop()
@@ -251,7 +322,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="MikroTik-NetMap",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -292,12 +363,14 @@ async def health():
     cfg = app_state.get("config")
     ping = app_state.get("ping_monitor")
     discovery = app_state.get("topology_discovery")
+    traffic = app_state.get("traffic_monitor")
     return {
         "status": "ok",
         "devices": len(cfg.devices) if cfg else 0,
         "ws_clients": ws_manager.client_count,
         "ping_running": ping is not None and ping._running,
         "discovery_running": discovery is not None and discovery._running,
+        "traffic_running": traffic is not None and traffic._running,
         "discovered_devices": len(discovery.discovered_devices) if discovery else 0,
         "discovered_links": len(discovery.discovered_links) if discovery else 0,
     }
@@ -338,11 +411,43 @@ async def websocket_endpoint(ws: WebSocket):
             "links": _build_all_links_list(),
         })
 
+    # Send latest traffic state if available.
+    traffic_mon = app_state.get("traffic_monitor")
+    if traffic_mon and traffic_mon.latest_traffic:
+        await ws.send_json({
+            "type": "traffic_state",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "interfaces": traffic_mon.latest_traffic,
+        })
+
     try:
         while True:
-            # Keep connection alive; handle client messages if needed.
             data = await ws.receive_text()
-            # Future: handle client requests (device_detail, position updates)
+            try:
+                msg = json.loads(data)
+                msg_type = msg.get("type")
+
+                if msg_type == "position_update":
+                    device_id = msg.get("device_id")
+                    position = msg.get("position")
+                    if device_id and position:
+                        # Persist to custom positions file.
+                        custom_pos = app_state.get("custom_positions", {})
+                        custom_pos[device_id] = {
+                            "x": float(position["x"]),
+                            "y": float(position["y"]),
+                        }
+                        app_state["custom_positions"] = custom_pos
+                        _save_custom_positions(custom_pos)
+
+                        # Broadcast to all clients.
+                        await ws_manager.broadcast({
+                            "type": "position_update",
+                            "device_id": device_id,
+                            "position": custom_pos[device_id],
+                        })
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                logger.debug("Invalid WebSocket message: %s", data[:200])
     except WebSocketDisconnect:
         pass
     finally:

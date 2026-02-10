@@ -4,10 +4,10 @@
 
 import { useNetworkStore } from '../stores/networkStore';
 import { getPingColor } from '../utils/colorThresholds';
-import { formatRtt } from '../utils/formatters';
+import { formatRtt, formatBandwidth } from '../utils/formatters';
 
 export function DevicePanel() {
-  const { devices, pingData, thresholds, selectedDevice, selectDevice } = useNetworkStore();
+  const { devices, pingData, trafficData, thresholds, selectedDevice, selectDevice } = useNetworkStore();
 
   if (!selectedDevice) return null;
 
@@ -108,18 +108,68 @@ export function DevicePanel() {
         </div>
       </div>
 
-      <div style={{
-        padding: '16px',
-        background: '#111827',
-        borderRadius: '8px',
-        fontSize: '13px',
-        color: '#6B7280',
-        textAlign: 'center',
-      }}>
-        Phase 2: Interface traffic &amp; system health will appear here.
-        <br />
-        Double-click device on map to open.
-      </div>
+      {/* Interface Traffic */}
+      {(() => {
+        const deviceTraffic = trafficData[device.id];
+        if (!deviceTraffic || Object.keys(deviceTraffic).length === 0) {
+          return (
+            <div style={{
+              padding: '16px',
+              background: '#111827',
+              borderRadius: '8px',
+              fontSize: '13px',
+              color: '#6B7280',
+              textAlign: 'center',
+            }}>
+              No traffic data available.
+              <br />
+              Device may not have API credentials configured.
+            </div>
+          );
+        }
+
+        return (
+          <div>
+            <div style={{
+              fontSize: '12px',
+              color: '#6B7280',
+              textTransform: 'uppercase',
+              marginBottom: '8px',
+            }}>
+              Interface Traffic
+            </div>
+            {Object.entries(deviceTraffic)
+              .filter(([, stats]) => stats.rxBps > 0 || stats.txBps > 0)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([ifName, stats]) => (
+                <div
+                  key={ifName}
+                  style={{
+                    padding: '10px 12px',
+                    background: '#111827',
+                    borderRadius: '6px',
+                    marginBottom: '6px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', color: '#D1D5DB', fontWeight: 600 }}>
+                    {ifName}
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: '12px' }}>
+                    <div style={{ color: '#22C55E' }}>
+                      RX: {formatBandwidth(stats.rxBps)}
+                    </div>
+                    <div style={{ color: '#60A5FA' }}>
+                      TX: {formatBandwidth(stats.txBps)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        );
+      })()}
     </div>
   );
 }

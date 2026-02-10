@@ -1,14 +1,17 @@
 /**
  * Main network topology map using vis-network.
- * Renders devices as image nodes with status-indicator dots
- * and links as edges with real-time updates.
+ * Renders devices as image nodes with status-indicator dots,
+ * links as edges with traffic-coloured lines and animated particles,
+ * and supports drag-to-reposition with persistence.
  */
 
 import { useEffect, useRef, useCallback } from 'react';
 import { Network, DataSet } from 'vis-network/standalone';
 import { useNetworkStore } from '../stores/networkStore';
-import { getPingColor } from '../utils/colorThresholds';
+import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
 import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
+import { sendWsMessage } from '../hooks/useWebSocket';
+import { formatBandwidth } from '../utils/formatters';
 
 /** Link dash pattern per link type. */
 const LINK_DASHES: Record<string, boolean | number[]> = {
@@ -25,6 +28,12 @@ function linkWidth(speed: number): number {
   return 1.5;
 }
 
+/** Particle state for traffic animation on a single edge. */
+interface Particle {
+  t: number; // 0..1 position along edge
+  speed: number; // t units per second
+}
+
 export function NetworkMap() {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
@@ -32,7 +41,24 @@ export function NetworkMap() {
   const edgesRef = useRef<DataSet<any>>(new DataSet());
   const animFrameRef = useRef<number>(0);
 
-  const { devices, links, pingData, thresholds, selectDevice } = useNetworkStore();
+  // Particle animation state.
+  const particlesRef = useRef<Map<string, Particle[]>>(new Map());
+  const lastFrameTimeRef = useRef<number>(performance.now());
+
+  // Refs for data accessed inside afterDrawing callback (registered once).
+  const linksRef = useRef(useNetworkStore.getState().links);
+  const trafficDataRef = useRef(useNetworkStore.getState().trafficData);
+
+  const { devices, links, pingData, trafficData, thresholds, selectDevice } =
+    useNetworkStore();
+
+  // Keep refs in sync.
+  useEffect(() => {
+    linksRef.current = links;
+  }, [links]);
+  useEffect(() => {
+    trafficDataRef.current = trafficData;
+  }, [trafficData]);
 
   // Pre-warm image cache with all threshold colors.
   useEffect(() => {
@@ -54,6 +80,7 @@ export function NetworkMap() {
         tooltipDelay: 200,
         zoomView: true,
         dragView: true,
+        dragNodes: true, // Phase 3: drag-to-reposition
       },
       nodes: {
         font: {
@@ -105,6 +132,97 @@ export function NetworkMap() {
     network.on('click', (params) => {
       if (params.nodes.length === 0) {
         selectDevice(null);
+      }
+    });
+
+    // Drag-to-reposition → send position update via WebSocket.
+    network.on('dragEnd', (params) => {
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        const pos = network.getPosition(nodeId);
+        sendWsMessage({
+          type: 'position_update',
+          device_id: nodeId,
+          position: { x: Math.round(pos.x), y: Math.round(pos.y) },
+        });
+      }
+    });
+
+    // Particle animation: draw traffic flow on top of edges.
+    network.on('afterDrawing', (ctx: CanvasRenderingContext2D) => {
+      const now = performance.now();
+      const dt = (now - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = now;
+
+      const curLinks = linksRef.current;
+      const curTraffic = trafficDataRef.current;
+
+      for (const link of curLinks) {
+        const edgeId = `${link.from}-${link.to}`;
+        const fromDev = link.from.split(':')[0];
+        const toDev = link.to.split(':')[0];
+        const fromIf = link.from.split(':').slice(1).join(':');
+        const toIf = link.to.split(':').slice(1).join(':');
+
+        // Get traffic for this link from either side.
+        const fromTraffic = curTraffic[fromDev]?.[fromIf];
+        const toTraffic = curTraffic[toDev]?.[toIf];
+        const maxBps = Math.max(
+          fromTraffic?.txBps || 0,
+          fromTraffic?.rxBps || 0,
+          toTraffic?.txBps || 0,
+          toTraffic?.rxBps || 0,
+        );
+
+        if (maxBps <= 0) {
+          particlesRef.current.delete(edgeId);
+          continue;
+        }
+
+        // Get node positions in network coordinates.
+        let fromPos: { x: number; y: number };
+        let toPos: { x: number; y: number };
+        try {
+          fromPos = network.getPosition(fromDev);
+          toPos = network.getPosition(toDev);
+        } catch {
+          continue;
+        }
+
+        // Compute utilisation for particle count and speed.
+        const speedBps = link.speed * 1_000_000;
+        const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
+        const targetCount = Math.min(5, Math.max(1, Math.ceil(utilPct / 20)));
+        const particleSpeed = 0.3 + Math.min(utilPct / 100, 1) * 0.7;
+        const color = getTrafficColor(utilPct);
+
+        // Manage particle pool for this edge.
+        let particles = particlesRef.current.get(edgeId) || [];
+        while (particles.length < targetCount) {
+          particles.push({ t: Math.random(), speed: particleSpeed });
+        }
+        if (particles.length > targetCount) {
+          particles = particles.slice(0, targetCount);
+        }
+
+        // Draw particles.
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.85;
+        for (const p of particles) {
+          p.t += p.speed * dt;
+          if (p.t > 1) p.t -= 1;
+
+          const x = fromPos.x + (toPos.x - fromPos.x) * p.t;
+          const y = fromPos.y + (toPos.y - fromPos.y) * p.t;
+
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        particlesRef.current.set(edgeId, particles);
       }
     });
 
@@ -176,10 +294,12 @@ export function NetworkMap() {
     }
   }, [links]);
 
-  // Animation loop: update node images at ~10fps from pingData.
+  // Animation loop: update node images + edge colours at ~10fps.
   const updateNodes = useCallback(() => {
     const nodes = nodesRef.current;
+    const edges = edgesRef.current;
 
+    // Update node images from ping data.
     for (const dev of devices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
@@ -187,7 +307,6 @@ export function NetworkMap() {
       const rtt = ping?.rttMs;
       const lastSeen = ping?.lastSeen;
 
-      // Compute uptime/downtime label.
       let statusLine = '';
       if (lastSeen) {
         const elapsed = (Date.now() - new Date(lastSeen).getTime()) / 1000;
@@ -211,12 +330,51 @@ export function NetworkMap() {
       });
     }
 
+    // Update edge colours from traffic data.
+    for (const link of links) {
+      const edgeId = `${link.from}-${link.to}`;
+      const fromDev = link.from.split(':')[0];
+      const fromIf = link.from.split(':').slice(1).join(':');
+      const toDev = link.to.split(':')[0];
+      const toIf = link.to.split(':').slice(1).join(':');
+
+      const fromTraffic = trafficData[fromDev]?.[fromIf];
+      const toTraffic = trafficData[toDev]?.[toIf];
+      const maxBps = Math.max(
+        fromTraffic?.txBps || 0,
+        fromTraffic?.rxBps || 0,
+        toTraffic?.txBps || 0,
+        toTraffic?.rxBps || 0,
+      );
+
+      const speedBps = link.speed * 1_000_000;
+      const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
+      const edgeColor = getTrafficColor(utilPct);
+
+      // Build traffic tooltip.
+      const txBps = fromTraffic?.txBps || toTraffic?.rxBps || 0;
+      const rxBps = fromTraffic?.rxBps || toTraffic?.txBps || 0;
+      const trafficLabel =
+        txBps > 0 || rxBps > 0
+          ? `\nTX: ${formatBandwidth(txBps)}\nRX: ${formatBandwidth(rxBps)}`
+          : '';
+
+      edges.update({
+        id: edgeId,
+        color: { color: edgeColor, hover: '#9CA3AF', highlight: '#60A5FA' },
+        title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${trafficLabel}`,
+      });
+    }
+
+    // Trigger redraw for particle animation.
+    networkRef.current?.redraw();
+
     animFrameRef.current = requestAnimationFrame(() => {
       setTimeout(() => {
         animFrameRef.current = requestAnimationFrame(updateNodes);
       }, 100);
     });
-  }, [devices, pingData, thresholds]);
+  }, [devices, links, pingData, trafficData, thresholds]);
 
   // Start/restart animation loop when dependencies change.
   useEffect(() => {

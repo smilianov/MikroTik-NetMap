@@ -80,12 +80,13 @@ class PingState(BaseModel):
     is_alive: bool = False
 
 
-class TrafficState(BaseModel):
-    """Real-time traffic state for a link."""
+class InterfaceTraffic(BaseModel):
+    """Traffic counters for a single interface on a device."""
 
-    link_id: str
-    in_bps: float = 0.0
-    out_bps: float = 0.0
+    name: str
+    rx_bps: float = 0.0
+    tx_bps: float = 0.0
+    running: bool = True
 
 
 class DeviceDetail(BaseModel):

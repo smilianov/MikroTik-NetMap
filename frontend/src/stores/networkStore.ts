@@ -1,5 +1,5 @@
 /**
- * Zustand store for network state (devices, links, ping data).
+ * Zustand store for network state (devices, links, ping data, traffic).
  */
 
 import { create } from 'zustand';
@@ -29,6 +29,14 @@ export interface LinkInfo {
   type: string;
 }
 
+export interface InterfaceTraffic {
+  rxBps: number;
+  txBps: number;
+}
+
+/** device_id → interface_name → traffic stats */
+export type TrafficData = Record<string, Record<string, InterfaceTraffic>>;
+
 interface NetworkState {
   // Config from server.
   devices: DeviceInfo[];
@@ -38,6 +46,9 @@ interface NetworkState {
   // Real-time ping state.
   pingData: Record<string, PingData>;
 
+  // Real-time traffic state.
+  trafficData: TrafficData;
+
   // UI state.
   selectedDevice: string | null;
   currentMap: string;
@@ -46,6 +57,8 @@ interface NetworkState {
   // Actions.
   setConfig: (devices: DeviceInfo[], links: LinkInfo[], thresholds: Threshold[]) => void;
   updatePingState: (devices: PingData[]) => void;
+  updateTraffic: (interfaces: TrafficData) => void;
+  updateDevicePosition: (deviceId: string, position: { x: number; y: number }) => void;
   mergeTopology: (
     addedDevices: DeviceInfo[],
     addedLinks: LinkInfo[],
@@ -61,6 +74,7 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   links: [],
   thresholds: DEFAULT_THRESHOLDS,
   pingData: {},
+  trafficData: {},
   selectedDevice: null,
   currentMap: 'main',
   wsConnected: false,
@@ -80,6 +94,15 @@ export const useNetworkStore = create<NetworkState>((set) => ({
       }
       return { pingData: updated };
     }),
+
+  updateTraffic: (interfaces) => set({ trafficData: interfaces }),
+
+  updateDevicePosition: (deviceId, position) =>
+    set((state) => ({
+      devices: state.devices.map((d) =>
+        d.id === deviceId ? { ...d, position } : d,
+      ),
+    })),
 
   mergeTopology: (addedDevices, addedLinks, removedLinks) =>
     set((state) => {
