@@ -107,19 +107,22 @@ backend/
 ├── requirements.txt     # Python dependencies
 ├── monitors/
 │   ├── __init__.py
-│   └── ping_monitor.py  # Async ICMP ping loop (icmplib)
+│   ├── ping_monitor.py          # Async ICMP ping loop (icmplib)
+│   └── topology_discovery.py    # MNDP/LLDP neighbour discovery
 ├── api/
 │   ├── __init__.py
 │   ├── websocket.py     # ConnectionManager — broadcast to all clients
 │   └── devices.py       # GET /api/devices endpoints
 └── mikrotik/
     ├── __init__.py
-    └── client.py         # Async RouterOS REST API client (httpx)
+    └── client.py         # RouterOS API client (REST + Classic)
 ```
 
 **Key patterns:**
-- FastAPI lifespan context starts/stops the PingMonitor
+- FastAPI lifespan context starts/stops PingMonitor and TopologyDiscovery
 - PingMonitor runs as an `asyncio.Task` calling `async_ping` every 2 seconds
+- TopologyDiscovery runs as an `asyncio.Task` querying `/ip/neighbor` every 5 minutes
+- `create_client()` factory picks REST (httpx) or Classic (routeros_api) based on `api_type`
 - WebSocket broadcasts are fire-and-forget; dead connections are cleaned up automatically
 - Config supports `${ENV_VAR}` syntax for secrets (never commit passwords)
 
@@ -141,6 +144,7 @@ frontend/src/
 │   └── networkStore.ts   # Zustand store for all state
 └── utils/
     ├── colorThresholds.ts # Graduated colour computation from timestamp
+    ├── deviceIcons.ts     # SVG device icon generator with status dots
     └── formatters.ts      # Duration, bandwidth, RTT formatting
 ```
 

@@ -2,27 +2,30 @@
 
 ## System Overview
 
-MTM-MultiView-LS is a single-container web application that pings MikroTik devices every 2 seconds and renders an interactive network topology map in the browser with real-time colour-coded status.
+MTM-MultiView-LS is a single-container web application that pings MikroTik devices every 2 seconds, auto-discovers network topology via MNDP/LLDP, and renders an interactive network map in the browser with real-time colour-coded status.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                    MTM-MultiView-LS                         │
-│                                                            │
-│  ┌──────────────────────┐    ┌──────────────────────────┐  │
-│  │   Frontend (React)   │◄──►│   Backend (FastAPI)       │  │
-│  │                      │ WS │                           │  │
-│  │  vis-network graph   │    │  PingMonitor  (2 s ICMP)  │  │
-│  │  Zustand store       │    │  WebSocket broadcaster    │  │
-│  │  Colour interpolation│    │  REST API                 │  │
-│  └──────────────────────┘    └───────────┬───────────────┘  │
-│                                          │                  │
-└──────────────────────────────────────────┼──────────────────┘
-                                           │  ICMP + RouterOS API
-                     ┌─────────────────────┼─────────────────────┐
-                     ▼                     ▼                     ▼
-               ┌──────────┐         ┌──────────┐         ┌──────────┐
-               │ Router 1 │─────────│ Switch 1 │─────────│ Router 2 │
-               └──────────┘         └──────────┘         └──────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     MTM-MultiView-LS                          │
+│                                                              │
+│  ┌──────────────────────┐    ┌────────────────────────────┐  │
+│  │   Frontend (React)   │◄──►│   Backend (FastAPI)         │  │
+│  │                      │ WS │                             │  │
+│  │  vis-network graph   │    │  PingMonitor    (2 s ICMP)  │  │
+│  │  SVG device icons    │    │  TopologyDiscovery (5 min)  │  │
+│  │  Zustand store       │    │  WebSocket broadcaster      │  │
+│  │  Colour interpolation│    │  REST API                   │  │
+│  └──────────────────────┘    └──────────┬─────────────────┘  │
+│                                         │                    │
+└─────────────────────────────────────────┼────────────────────┘
+                                          │  ICMP + RouterOS API
+                     ┌────────────────────┼────────────────────┐
+                     ▼                    ▼                    ▼
+               ┌──────────┐        ┌──────────┐        ┌──────────┐
+               │ Router 1 │────────│ Switch 1 │────────│ Router 2 │
+               └──────────┘        └──────────┘        └──────────┘
+                    │ /ip/neighbor       │                    │
+                    └───── discovers ────┴──── all neighbours ┘
 ```
 
 ---
@@ -66,12 +69,22 @@ MTM-MultiView-LS is a single-container web application that pings MikroTik devic
 - `GET /api/devices/{id}` — single device
 - Reads from shared app state (config + ping monitor)
 
-#### `mikrotik/client.py` — RouterOS API client (Phase 2)
+#### `monitors/topology_discovery.py` — MNDP/LLDP discovery engine
 
-- Async HTTP client using `httpx`
-- Connects to RouterOS REST API (`/rest/` endpoint, port 443)
-- Methods: `get_neighbors()`, `get_interfaces()`, `get_system_resource()`
-- Not used in Phase 1 but ready for topology discovery and traffic collection
+- Queries `/ip/neighbor` on every device that has API credentials
+- Runs every `interval` seconds (default 300 = 5 min) as an `asyncio.Task`
+- Collects **half-links** (Device A sees B on ether1) and matches them into **full links**
+- Detects topology changes: added devices, added links, removed links
+- Auto-positions newly discovered devices in a circle around their parent
+- Persists discoveries to `config/discovered_topology.json` (survives restarts)
+- Calls `on_update` callback to broadcast changes via WebSocket
+
+#### `mikrotik/client.py` — RouterOS API client
+
+- **`MikroTikClient`** — async REST client using `httpx` (HTTPS port 443, RouterOS 7.1+)
+- **`MikroTikClassicClient`** — async wrapper around `routeros_api` library (port 8728, RouterOS 6.49+); synchronous calls wrapped in `asyncio.to_thread()`
+- **`create_client()`** — factory function that picks the right client based on `api_type`
+- Methods: `get_neighbors()`, `get_interfaces()`, `get_system_resource()`, `close()`
 
 ### Frontend
 
@@ -112,15 +125,17 @@ MTM-MultiView-LS is a single-container web application that pings MikroTik devic
 - Auto-reconnects after 3 s on disconnect
 - Dispatches `config` messages → `setConfig()` (one-time on connect)
 - Dispatches `ping_state` messages → `updatePingState()` (every 2 s)
+- Dispatches `topology_update` messages → `mergeTopology()` (after discovery sweeps)
 
 #### `stores/networkStore.ts` — Zustand state
 
-- `devices` — device info from config (name, host, type, position)
-- `links` — link definitions
+- `devices` — device info from config + discovered (name, host, type, position)
+- `links` — link definitions (manual + discovered)
 - `thresholds` — colour thresholds from server
 - `pingData` — real-time ping state per device (last_seen, rtt, is_alive)
 - `selectedDevice` — currently selected device ID (for detail panel)
 - `wsConnected` — WebSocket connection status
+- `mergeTopology()` — incrementally adds discovered devices/links without replacing config entries
 
 #### `utils/colorThresholds.ts` — Colour engine
 
@@ -148,6 +163,26 @@ Browser: useWebSocket.handleMessage()
   └── networkStore.updatePingState(devices)
        └── NetworkMap animation loop reads pingData
             └── getPingColor(last_seen) → node.color update
+```
+
+### Discovery cycle (every 5 minutes by default)
+
+```
+TopologyDiscovery._sweep()
+  └── create_client(host, api_type) → REST or Classic client
+       └── client.get_neighbors() × N devices (concurrent)
+            └── Collect half-links: "A sees B on ether1"
+                 └── Match half-links into full links
+                      └── Detect changes (added/removed devices & links)
+
+TopologyDiscovery → on_update callback
+  └── PingMonitor.add_device() for new devices
+  └── ws_manager.broadcast({type: "topology_update", ...})
+       └── WebSocket → all connected browsers
+
+Browser: useWebSocket.handleMessage()
+  └── networkStore.mergeTopology(added_devices, added_links, removed_links)
+       └── NetworkMap renders new nodes + edges
 ```
 
 ### Initial connection

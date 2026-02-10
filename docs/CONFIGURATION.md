@@ -37,8 +37,8 @@ thresholds:
 
 api_defaults:
   username: admin
-  api_type: rest
-  port: 443
+  api_type: classic       # "rest" for HTTPS/443 or "classic" for port 8728
+  port: 8728
 
 devices:
   - name: core-router
@@ -146,15 +146,17 @@ List of MikroTik devices to monitor.
 | `map` | string | no | `main` | Which map this device belongs to |
 | `position` | object | no | `{x: 0, y: 0}` | Position on the map canvas |
 
-**Device types** control the vis-network node shape:
+**Device types** determine the SVG icon on the map:
 
-| Type | Shape |
-|------|-------|
-| `router` | Diamond |
-| `switch` | Box |
-| `ap` | Triangle |
-| `server` | Square |
-| `other` | Circle |
+| Type | Icon |
+|------|------|
+| `router` | Box with routing arrows |
+| `switch` | Rectangular with port LEDs |
+| `ap` | Dome with WiFi waves |
+| `server` | Tower with drive bays |
+| `other` | Monitor screen |
+
+Each icon includes a coloured status dot (bottom-right) that reflects the device's ping state.
 
 **Example with environment variable:**
 
@@ -231,7 +233,7 @@ Manual link definitions between devices. Format: `device-name:interface-name`.
 
 ### `discovery`
 
-Auto-discovery settings (Phase 2 — not yet active).
+Auto-discovery settings. Queries `/ip/neighbor` on devices that have API credentials (password set). Discovered topology is persisted to `config/discovered_topology.json`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

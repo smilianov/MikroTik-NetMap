@@ -28,12 +28,14 @@ Part of the **MTM by LS** monitoring suite alongside [Monitoring-Codex](https://
 - **Double-click drill-down** panel with device details
 - **YAML config** with `${ENV_VAR}` secret expansion
 
-### Topology & Traffic (Phase 2 — planned)
-- Auto-discovery via MNDP / LLDP (`/ip/neighbor`)
-- Animated traffic-flow particles on links
-- Link colour by utilisation (green → yellow → red)
+### Topology Discovery (Phase 2 — current)
+- **Auto-discovery** via MNDP / LLDP — queries `/ip/neighbor` on devices with API credentials
+- **Both REST API** (HTTPS port 443, RouterOS 7.1+) **and Classic API** (port 8728, RouterOS 6.49+)
+- **Half-link matching** — combines neighbour reports from both sides into full bidirectional links
+- **Auto-positioning** — discovered devices placed in a circle around their parent device
+- **Persistence** — discovered topology saved to `config/discovered_topology.json` (survives restarts)
+- **SVG device icons** — routers, switches, APs, servers rendered as distinct icons with coloured status dots
 - Line styles: solid = wired, dashed = wireless, dotted = VPN
-- Drag-to-reposition with position persistence
 
 ### Device Dashboard & Submaps (Phase 3 — planned)
 - Slide-in dashboard: CPU, memory, temperature, per-interface sparklines
@@ -41,7 +43,18 @@ Part of the **MTM by LS** monitoring suite alongside [Monitoring-Codex](https://
 - Custom map backgrounds (floor plans, geographic images)
 - Optional Grafana iframe embedding for deep metrics
 
-### Polish & Scale (Phase 4 — planned)
+### Traffic Visualisation (Phase 3 — planned)
+- Animated traffic-flow particles on links
+- Link colour by utilisation (green → yellow → red)
+- Drag-to-reposition with position persistence
+
+### Device Dashboard & Submaps (Phase 4 — planned)
+- Slide-in dashboard: CPU, memory, temperature, per-interface sparklines
+- Submap hierarchy with full multi-level status cascade
+- Custom map backgrounds (floor plans, geographic images)
+- Optional Grafana iframe embedding for deep metrics
+
+### Polish & Scale (Phase 5 — planned)
 - Right-click context menu (ping, reboot, open in WinBox / Grafana)
 - Browser notifications on state change
 - Config hot-reload
@@ -98,6 +111,61 @@ docker compose up -d
 
 Open **http://localhost:8585** — single container serves both backend and frontend.
 
+### 4. Deploy to a server
+
+```bash
+# Copy project to server
+rsync -avz --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/' \
+  --exclude='frontend/dist/' --exclude='.git/' \
+  . user@server:/opt/MTM-MultiView-LS/
+
+# SSH into server
+ssh user@server
+
+# Create production config
+cd /opt/MTM-MultiView-LS
+cp config/netmap.example.yaml config/netmap.yaml
+# Edit config/netmap.yaml — set real device IPs, credentials, enable discovery
+
+# Build and run
+docker build -t mikrotik-netmap:latest .
+docker run -d --name netmap \
+  -p 8585:8585 \
+  -v $(pwd)/config:/app/config \
+  --restart unless-stopped \
+  mikrotik-netmap:latest
+```
+
+Open **http://server-ip:8585** in your browser.
+
+### 5. Enable topology discovery
+
+In `config/netmap.yaml`, give at least one device API credentials and enable discovery:
+
+```yaml
+api_defaults:
+  username: prometheus
+  api_type: classic       # "classic" for port 8728, "rest" for HTTPS/443
+  port: 8728
+
+devices:
+  - name: core-router
+    host: 10.0.0.1
+    type: router
+    profile: ccr
+    password: "your-api-password"
+    map: main
+    position: {x: 400, y: 200}
+
+discovery:
+  enabled: true
+  interval: 300             # re-discover every 5 minutes
+  auto_add_devices: true    # add neighbours to the map automatically
+  auto_add_links: true      # show discovered links on the map
+```
+
+The tool queries `/ip/neighbor` on every device with credentials and builds the topology graph automatically. Discovered devices and links persist across restarts in `config/discovered_topology.json`.
+
 ---
 
 ## Project Structure
@@ -109,12 +177,13 @@ MTM-MultiView-LS/
 │   ├── config.py                # YAML config loader
 │   ├── models.py                # Pydantic data models
 │   ├── monitors/
-│   │   └── ping_monitor.py      # Async ICMP ping (2 s interval)
+│   │   ├── ping_monitor.py      # Async ICMP ping (2 s interval)
+│   │   └── topology_discovery.py # MNDP/LLDP neighbour discovery
 │   ├── api/
 │   │   ├── websocket.py         # WebSocket connection manager
 │   │   └── devices.py           # REST device endpoints
 │   ├── mikrotik/
-│   │   └── client.py            # Async RouterOS REST API client
+│   │   └── client.py            # RouterOS API client (REST + Classic)
 │   └── requirements.txt
 │
 ├── frontend/
@@ -131,6 +200,7 @@ MTM-MultiView-LS/
 │   │   │   └── networkStore.ts   # Zustand state management
 │   │   └── utils/
 │   │       ├── colorThresholds.ts # Graduated colour logic
+│   │       ├── deviceIcons.ts     # SVG device icon generator
 │   │       └── formatters.ts      # Duration / bandwidth display
 │   ├── package.json
 │   └── vite.config.ts
@@ -173,7 +243,7 @@ MTM-MultiView-LS/
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/health` | Health check (device count, WS clients, ping status) |
+| GET | `/api/health` | Health check (devices, WS clients, ping/discovery status) |
 | GET | `/api/devices` | All devices with current ping state |
 | GET | `/api/devices/{id}` | Single device detail |
 | GET | `/api/config` | Thresholds, maps, links for frontend |
@@ -182,7 +252,7 @@ MTM-MultiView-LS/
 
 Connect to `ws://host:8585/ws`. On connect, the server sends:
 1. `ping_state` — current state of all devices
-2. `config` — thresholds, device list, link definitions
+2. `config` — thresholds, device list, link definitions (including discovered)
 
 Then every 2 seconds:
 ```json
@@ -192,6 +262,17 @@ Then every 2 seconds:
   "devices": [
     {"id": "core-router", "last_seen": "2026-02-10T12:00:00Z", "rtt_ms": 1.2, "is_alive": true}
   ]
+}
+```
+
+When topology changes are detected (after a discovery sweep):
+```json
+{
+  "type": "topology_update",
+  "timestamp": "2026-02-10T12:05:00Z",
+  "added_devices": [{"id": "switch-dc3", "name": "switch-dc3", "host": "10.0.0.5", ...}],
+  "added_links": [{"from": "core-router:ether3", "to": "switch-dc3:ether1", ...}],
+  "removed_links": []
 }
 ```
 
