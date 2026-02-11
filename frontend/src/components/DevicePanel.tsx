@@ -85,8 +85,8 @@ export function DevicePanel() {
           label="Status"
           value={
             elapsed === null ? 'Unknown' :
-            elapsed <= 5 ? 'Online' :
-            elapsed <= 180 ? `Down ${Math.round(elapsed)}s` :
+            elapsed <= 35 ? 'Online' :
+            elapsed <= 345 ? `Down ${Math.round(elapsed)}s` :
             'Down'
           }
           valueColor={color}

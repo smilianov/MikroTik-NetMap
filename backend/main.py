@@ -272,6 +272,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             len(devices_with_creds),
             cfg.discovery_interval,
         )
+
+        # Seed PingMonitor with previously discovered devices (persisted across restarts).
+        if discovery.discovered_devices:
+            for dd in discovery.discovered_devices.values():
+                dev_config = DeviceConfig(
+                    name=dd.name,
+                    host=dd.host,
+                    type=DeviceType(_infer_type_str(dd.board, dd.platform)),
+                    position=dd.position,
+                )
+                ping.add_device(dev_config)
+            logger.info(
+                "Seeded PingMonitor with %d persisted discovered devices",
+                len(discovery.discovered_devices),
+            )
     else:
         if not cfg.discovery_enabled:
             logger.info("TopologyDiscovery disabled in config")

@@ -51,6 +51,7 @@ interface NetworkState {
 
   // UI state.
   selectedDevice: string | null;
+  sidebarVisible: boolean;
   currentMap: string;
   wsConnected: boolean;
 
@@ -65,6 +66,7 @@ interface NetworkState {
     removedLinks: string[],
   ) => void;
   selectDevice: (deviceId: string | null) => void;
+  toggleSidebar: () => void;
   setCurrentMap: (mapName: string) => void;
   setWsConnected: (connected: boolean) => void;
 }
@@ -76,6 +78,7 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   pingData: {},
   trafficData: {},
   selectedDevice: null,
+  sidebarVisible: false,
   currentMap: 'main',
   wsConnected: false,
 
@@ -131,6 +134,7 @@ export const useNetworkStore = create<NetworkState>((set) => ({
     }),
 
   selectDevice: (deviceId) => set({ selectedDevice: deviceId }),
+  toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),
   setCurrentMap: (mapName) => set({ currentMap: mapName }),
   setWsConnected: (connected) => set({ wsConnected: connected }),
 }));

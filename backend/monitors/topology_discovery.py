@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 # Persistence file for discovered topology (survives restarts).
 PERSISTENCE_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "discovered_topology.json"
+
+# Tree layout constants.
+TREE_VERTICAL_SPACING = 200
+TREE_HORIZONTAL_SPACING = 200
 
 # Interface name patterns to determine link type.
 _WIRELESS_PATTERNS = ("wlan", "wifi", "cap")
@@ -58,6 +62,35 @@ def _infer_device_type(board: str, platform: str) -> str:
     if platform.lower() != "mikrotik":
         return DeviceType.OTHER.value
     return DeviceType.ROUTER.value
+
+
+def _gateway_score(board: str) -> int:
+    """Score a board for switch-gateway likelihood.  Higher = more backbone.
+
+    Only CRS/CSS boards score > 0.  SFP/SFP+/XG port counts push the score
+    up — backbone switches (e.g. CRS317-1G-16S) outscore access switches
+    (e.g. CRS326-24G-2S).
+    """
+    if not board:
+        return 0
+    b = board.upper()
+    # Only consider switches (CRS/CSS) as potential gateways.
+    if "CRS" not in b and "CSS" not in b:
+        return 0
+    score = 50  # Base score for being a switch.
+    # SFP+ ports (10G fibre).
+    m = re.search(r"(\d+)S\+", b)
+    if m:
+        score += int(m.group(1)) * 10
+    # SFP ports (1G fibre) — but not SFP+ (already matched above).
+    m = re.search(r"(\d+)S(?!\+|S)", b)
+    if m:
+        score += int(m.group(1)) * 6
+    # XG ports (10G copper).
+    m = re.search(r"(\d+)XG", b)
+    if m:
+        score += int(m.group(1)) * 10
+    return score
 
 
 def _make_link_id(a_dev: str, a_if: str, b_dev: str, b_if: str) -> str:
@@ -108,6 +141,11 @@ class TopologyDiscovery:
 
         # Restore previous discoveries from disk.
         self._load_persistence()
+        if self.discovered_devices:
+            # Rebuild hierarchy from persisted data.
+            self._infer_hierarchy_from_persisted()
+            self._recalculate_tree_positions()
+            self._save_persistence()
 
     def _load_persistence(self) -> None:
         """Load previously discovered topology from JSON file."""
@@ -151,6 +189,34 @@ class TopologyDiscovery:
         except Exception:
             logger.warning("Failed to save discovery persistence", exc_info=True)
 
+    def _infer_hierarchy_from_persisted(self) -> None:
+        """Rebuild parent-child hierarchy from persisted discovered devices.
+
+        Constructs synthetic half-links from persisted data so
+        ``_infer_hierarchy`` can group by interface and pick gateways.
+        """
+        synthetic: list[dict[str, Any]] = []
+        for dev in self.discovered_devices.values():
+            synthetic.append({
+                "local_device": dev.discovered_by
+                    if dev.discovered_by in self._configured_names
+                    else next(iter(self._configured_names), ""),
+                "local_interface": dev.discovered_on,
+                "remote_identity": dev.name,
+                "remote_board": dev.board,
+            })
+        if not synthetic:
+            return
+        parent_map = self._infer_hierarchy(synthetic)
+        for name, dev in self.discovered_devices.items():
+            new_parent = parent_map.get(name)
+            if new_parent and new_parent != dev.discovered_by:
+                logger.info(
+                    "Persisted hierarchy fix: %s parent %s → %s",
+                    name, dev.discovered_by, new_parent,
+                )
+                dev.discovered_by = new_parent
+
     async def _query_device(
         self, device: DeviceConfig
     ) -> list[dict[str, Any]]:
@@ -191,14 +257,148 @@ class TopologyDiscovery:
         finally:
             await client.close()
 
+    def _infer_hierarchy(
+        self, all_half_links: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Infer parent-child relationships from interface grouping.
+
+        Groups neighbors by the local interface they're seen on.  Within each
+        group containing multiple devices, the highest-scoring switch (by SFP
+        port count) becomes the intermediate parent for all other devices in
+        the group.  VPN tunnel neighbors are always direct children.
+
+        Returns a dict mapping ``remote_identity -> inferred parent name``.
+        """
+        # Step 1 — pick ONE interface per remote device (prefer mgmt VLAN).
+        device_if: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        for hl in all_half_links:
+            remote_id = hl["remote_identity"]
+            if not remote_id:
+                continue
+            iface = hl["local_interface"]
+            querying_dev = hl["local_device"]
+
+            existing = device_if.get(remote_id)
+            if existing is None:
+                device_if[remote_id] = (querying_dev, iface, hl)
+            elif "mgmt" in iface.lower() and "mgmt" not in existing[1].lower():
+                device_if[remote_id] = (querying_dev, iface, hl)
+
+        # Step 2 — group by (querying_device, interface).
+        groups: dict[tuple[str, str], list[tuple[str, dict[str, Any]]]] = {}
+        for remote_id, (querying_dev, iface, hl) in device_if.items():
+            key = (querying_dev, iface)
+            groups.setdefault(key, []).append((remote_id, hl))
+
+        # Step 3 — for each group, pick the best gateway switch.
+        parent_map: dict[str, str] = {}
+        for (querying_dev, iface), members in groups.items():
+            # VPN tunnels → always direct children.
+            if iface.startswith("<") or any(
+                p in iface.lower() for p in _VPN_PATTERNS
+            ):
+                for remote_id, _ in members:
+                    parent_map[remote_id] = querying_dev
+                continue
+
+            if len(members) <= 1:
+                for remote_id, _ in members:
+                    parent_map[remote_id] = querying_dev
+                continue
+
+            # Score each member for gateway potential.
+            best_gw: str | None = None
+            best_score = 0
+            for remote_id, hl in members:
+                score = _gateway_score(hl.get("remote_board", ""))
+                if score > best_score:
+                    best_score = score
+                    best_gw = remote_id
+
+            if best_gw and best_score > 0:
+                for remote_id, _ in members:
+                    if remote_id == best_gw:
+                        parent_map[remote_id] = querying_dev
+                    else:
+                        parent_map.setdefault(remote_id, best_gw)
+            else:
+                # No switch found → all direct children.
+                for remote_id, _ in members:
+                    parent_map[remote_id] = querying_dev
+
+        logger.info(
+            "Hierarchy inference: %d devices mapped to parents",
+            len(parent_map),
+        )
+        return parent_map
+
     def _auto_position(self, parent_name: str, index: int, total: int) -> Position:
-        """Calculate auto-position for a discovered device around its parent."""
+        """Calculate tree position for a discovered device below its parent."""
         parent_pos = self._device_positions.get(parent_name, Position())
-        radius = 150
-        angle = (2 * math.pi * index / max(total, 1)) - math.pi / 2
+        offset_x = (index - (total - 1) / 2) * TREE_HORIZONTAL_SPACING
         return Position(
-            x=round(parent_pos.x + radius * math.cos(angle)),
-            y=round(parent_pos.y + radius * math.sin(angle)),
+            x=round(parent_pos.x + offset_x),
+            y=parent_pos.y + TREE_VERTICAL_SPACING,
+        )
+
+    def _recalculate_tree_positions(self) -> None:
+        """Recalculate all discovered device positions as a hierarchical tree.
+
+        Places children below their discovering parent, spread horizontally
+        based on subtree width.  Configured devices keep their positions.
+        """
+        if not self.discovered_devices:
+            return
+
+        # Build parent → children mapping from discovered_by.
+        children_of: dict[str, list[str]] = {}
+        for dev in self.discovered_devices.values():
+            children_of.setdefault(dev.discovered_by, []).append(dev.name)
+
+        # Sort children alphabetically for consistent layout.
+        for kids in children_of.values():
+            kids.sort()
+
+        # Calculate subtree leaf count for horizontal width allocation.
+        def leaf_count(name: str) -> int:
+            kids = children_of.get(name, [])
+            if not kids:
+                return 1
+            return sum(leaf_count(k) for k in kids)
+
+        # Recursively position children below their parent.
+        def position_subtree(parent: str) -> None:
+            kids = children_of.get(parent, [])
+            if not kids:
+                return
+
+            parent_pos = self._device_positions.get(parent, Position())
+            widths = [leaf_count(k) for k in kids]
+            total_leaves = sum(widths)
+
+            # Center children under parent.
+            start_x = parent_pos.x - (total_leaves - 1) * TREE_HORIZONTAL_SPACING / 2
+            cumulative = 0
+            for kid, w in zip(kids, widths):
+                kid_x = start_x + (cumulative + (w - 1) / 2) * TREE_HORIZONTAL_SPACING
+                kid_pos = Position(
+                    x=round(kid_x),
+                    y=parent_pos.y + TREE_VERTICAL_SPACING,
+                )
+                if kid in self.discovered_devices:
+                    self.discovered_devices[kid].position = kid_pos
+                self._device_positions[kid] = kid_pos
+                cumulative += w
+                position_subtree(kid)
+
+        # Start from roots (parents that aren't discovered devices themselves).
+        for parent in list(children_of.keys()):
+            if parent not in self.discovered_devices:
+                position_subtree(parent)
+
+        logger.info(
+            "Tree layout: positioned %d discovered devices",
+            len(self.discovered_devices),
         )
 
     async def _sweep(self) -> dict[str, Any]:
@@ -222,6 +422,9 @@ class TopologyDiscovery:
         if not all_half_links:
             logger.debug("Discovery sweep: no neighbors found")
             return {"added_devices": [], "added_links": [], "removed_links": []}
+
+        # Infer parent-child hierarchy from interface grouping.
+        parent_map = self._infer_hierarchy(all_half_links)
 
         # Group half-links by remote device identity for cross-matching.
         # Key: (local_device, remote_identity)
@@ -293,15 +496,15 @@ class TopologyDiscovery:
         # Handle new devices (if auto_add_devices enabled).
         added_devices: list[DiscoveredDevice] = []
         if self.auto_add_devices:
-            # Count new neighbors per parent for positioning.
+            # Count new neighbors per inferred parent for positioning.
             parent_new_counts: dict[str, int] = {}
             for name, hl in new_device_candidates.items():
-                parent = hl["local_device"]
+                parent = parent_map.get(name, hl["local_device"])
                 parent_new_counts[parent] = parent_new_counts.get(parent, 0) + 1
 
             parent_indices: dict[str, int] = {}
             for name, hl in new_device_candidates.items():
-                parent = hl["local_device"]
+                parent = parent_map.get(name, hl["local_device"])
                 idx = parent_indices.get(parent, 0)
                 parent_indices[parent] = idx + 1
                 total = parent_new_counts[parent]
@@ -330,6 +533,18 @@ class TopologyDiscovery:
                 if name in self.discovered_devices:
                     self.discovered_devices[name].last_seen = now
 
+        # Update discovered_by for existing devices based on hierarchy inference.
+        hierarchy_changed = False
+        for name, dev in self.discovered_devices.items():
+            new_parent = parent_map.get(name)
+            if new_parent and new_parent != dev.discovered_by:
+                logger.info(
+                    "Hierarchy update: %s parent %s → %s",
+                    name, dev.discovered_by, new_parent,
+                )
+                dev.discovered_by = new_parent
+                hierarchy_changed = True
+
         # Update link state.
         self.discovered_links = new_links
 
@@ -345,6 +560,10 @@ class TopologyDiscovery:
             len(removed_links),
             len(added_devices),
         )
+
+        # Recalculate tree layout if hierarchy changed or new devices were added.
+        if added_devices or hierarchy_changed:
+            self._recalculate_tree_positions()
 
         # Persist to disk.
         self._save_persistence()

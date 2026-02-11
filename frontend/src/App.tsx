@@ -3,9 +3,11 @@ import { NetworkMap } from './components/NetworkMap';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { DevicePanel } from './components/DevicePanel';
+import { useNetworkStore } from './stores/networkStore';
 
 function App() {
   useWebSocket();
+  const sidebarVisible = useNetworkStore((s) => s.sidebarVisible);
 
   return (
     <div style={{
@@ -17,7 +19,7 @@ function App() {
     }}>
       <StatusBar />
       <div style={{ display: 'flex', flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <Sidebar />
+        {sidebarVisible && <Sidebar />}
         <div style={{ flex: 1, position: 'relative' }}>
           <NetworkMap />
           <DevicePanel />

@@ -5,7 +5,7 @@
  * and supports drag-to-reposition with persistence.
  */
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { Network, DataSet } from 'vis-network/standalone';
 import { useNetworkStore } from '../stores/networkStore';
 import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
@@ -45,11 +45,18 @@ export function NetworkMap() {
   const particlesRef = useRef<Map<string, Particle[]>>(new Map());
   const lastFrameTimeRef = useRef<number>(performance.now());
 
+  // Drag lock state: locked by default (nodes can't be dragged).
+  const [dragUnlocked, setDragUnlocked] = useState(false);
+  const dragUnlockedRef = useRef(false);
+
+  // Pause entire animation loop while dragging for smooth performance.
+  const isDraggingRef = useRef(false);
+
   // Refs for data accessed inside afterDrawing callback (registered once).
   const linksRef = useRef(useNetworkStore.getState().links);
   const trafficDataRef = useRef(useNetworkStore.getState().trafficData);
 
-  const { devices, links, pingData, trafficData, thresholds, selectDevice } =
+  const { devices, links, pingData, trafficData, thresholds, selectDevice, sidebarVisible, toggleSidebar } =
     useNetworkStore();
 
   // Keep refs in sync.
@@ -80,7 +87,7 @@ export function NetworkMap() {
         tooltipDelay: 200,
         zoomView: true,
         dragView: true,
-        dragNodes: true, // Phase 3: drag-to-reposition
+        dragNodes: false, // Toggled via lock/unlock button
       },
       nodes: {
         font: {
@@ -135,8 +142,16 @@ export function NetworkMap() {
       }
     });
 
+    // Pause animation loop during drag for smooth performance.
+    network.on('dragStart', (params) => {
+      if (params.nodes.length > 0) {
+        isDraggingRef.current = true;
+      }
+    });
+
     // Drag-to-reposition → send position update via WebSocket.
     network.on('dragEnd', (params) => {
+      isDraggingRef.current = false;
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0] as string;
         const pos = network.getPosition(nodeId);
@@ -234,6 +249,12 @@ export function NetworkMap() {
     };
   }, [selectDevice]);
 
+  // Toggle drag mode when lock state changes.
+  useEffect(() => {
+    dragUnlockedRef.current = dragUnlocked;
+    networkRef.current?.setOptions({ interaction: { dragNodes: dragUnlocked } });
+  }, [dragUnlocked]);
+
   // Sync devices → vis nodes when config changes.
   useEffect(() => {
     const nodes = nodesRef.current;
@@ -296,6 +317,16 @@ export function NetworkMap() {
 
   // Animation loop: update node images + edge colours at ~10fps.
   const updateNodes = useCallback(() => {
+    // Skip all updates while drag mode is unlocked for smooth repositioning.
+    if (dragUnlockedRef.current || isDraggingRef.current) {
+      animFrameRef.current = requestAnimationFrame(() => {
+        setTimeout(() => {
+          animFrameRef.current = requestAnimationFrame(updateNodes);
+        }, 100);
+      });
+      return;
+    }
+
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
 
@@ -310,9 +341,9 @@ export function NetworkMap() {
       let statusLine = '';
       if (lastSeen) {
         const elapsed = (Date.now() - new Date(lastSeen).getTime()) / 1000;
-        if (elapsed <= 5) {
+        if (elapsed <= 35) {
           statusLine = rtt !== null && rtt !== undefined ? `${rtt.toFixed(1)} ms` : '';
-        } else if (elapsed < 60) {
+        } else if (elapsed < 195) {
           statusLine = `Missing: ${Math.round(elapsed)}s`;
         } else if (elapsed < 3600) {
           statusLine = `Missing: ${Math.round(elapsed / 60)}m`;
@@ -385,15 +416,96 @@ export function NetworkMap() {
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [updateNodes]);
 
+  const handleZoomIn = () => {
+    const net = networkRef.current;
+    if (!net) return;
+    const scale = net.getScale();
+    net.moveTo({ scale: scale * 1.3, animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
+  };
+
+  const handleZoomOut = () => {
+    const net = networkRef.current;
+    if (!net) return;
+    const scale = net.getScale();
+    net.moveTo({ scale: scale / 1.3, animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
+  };
+
+  const handleFitAll = () => {
+    networkRef.current?.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+  };
+
+  const btnStyle: React.CSSProperties = {
+    width: '36px',
+    height: '36px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#1F2937',
+    border: '1px solid #374151',
+    borderRadius: '6px',
+    color: '#D1D5DB',
+    fontSize: '18px',
+    cursor: 'pointer',
+    userSelect: 'none',
+  };
+
   return (
-    <div
-      ref={containerRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        background: '#111827',
-        borderRadius: '8px',
-      }}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          background: '#111827',
+          borderRadius: '8px',
+        }}
+      />
+      {/* Sidebar toggle */}
+      <button
+        onClick={toggleSidebar}
+        style={{
+          ...btnStyle,
+          position: 'absolute',
+          top: '12px',
+          left: '12px',
+          zIndex: 50,
+          background: sidebarVisible ? '#374151' : '#1F2937',
+          border: sidebarVisible ? '1px solid #60A5FA' : '1px solid #374151',
+          color: sidebarVisible ? '#60A5FA' : '#D1D5DB',
+          fontSize: '16px',
+        }}
+        title={sidebarVisible ? 'Hide device list' : 'Show device list'}
+      >
+        &#9776;
+      </button>
+      {/* Map controls */}
+      <div style={{
+        position: 'absolute',
+        top: '12px',
+        right: '12px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        zIndex: 50,
+      }}>
+        <button
+          onClick={() => setDragUnlocked((v) => !v)}
+          style={{
+            ...btnStyle,
+            background: dragUnlocked ? '#374151' : '#1F2937',
+            color: dragUnlocked ? '#F59E0B' : '#D1D5DB',
+            border: dragUnlocked ? '1px solid #F59E0B' : '1px solid #374151',
+          }}
+          title={dragUnlocked ? 'Lock positions (disable drag)' : 'Unlock positions (enable drag)'}
+        >
+          {dragUnlocked ? '\u{1F513}' : '\u{1F512}'}
+        </button>
+        <button onClick={handleZoomIn} style={btnStyle} title="Zoom in">+</button>
+        <button onClick={handleZoomOut} style={btnStyle} title="Zoom out">&minus;</button>
+        <button onClick={handleFitAll} style={{ ...btnStyle, fontSize: '13px', fontWeight: 700 }} title="Fit all">
+          [ ]
+        </button>
+      </div>
+    </div>
   );
 }

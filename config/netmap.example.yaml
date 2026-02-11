@@ -14,25 +14,25 @@ ping:
 
 # Graduated color thresholds (customisable)
 thresholds:
-  - max_seconds: 5
+  - max_seconds: 35
     color: "#22C55E"    # green — online
     label: "Online"
-  - max_seconds: 10
+  - max_seconds: 70
     color: "#FFFF00"    # bright yellow
     label: "Degraded"
-  - max_seconds: 15
+  - max_seconds: 105
     color: "#FFD700"    # yellow
     label: ""
-  - max_seconds: 20
+  - max_seconds: 135
     color: "#FF8C00"    # bright orange
     label: ""
-  - max_seconds: 25
+  - max_seconds: 165
     color: "#FF6600"    # orange
     label: ""
-  - max_seconds: 30
+  - max_seconds: 195
     color: "#CC4400"    # dark orange
     label: ""
-  - max_seconds: 180
+  - max_seconds: 345
     color: "#EF4444"    # red — down
     label: "Down"
 
