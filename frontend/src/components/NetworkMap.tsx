@@ -52,11 +52,16 @@ export function NetworkMap() {
   // Pause entire animation loop while dragging for smooth performance.
   const isDraggingRef = useRef(false);
 
+  // Cache last computed node/edge state to avoid redundant DataSet updates.
+  const lastNodeLabelsRef = useRef<Map<string, string>>(new Map());
+  const lastNodeImagesRef = useRef<Map<string, string>>(new Map());
+  const lastEdgeColorsRef = useRef<Map<string, string>>(new Map());
+
   // Refs for data accessed inside afterDrawing callback (registered once).
   const linksRef = useRef(useNetworkStore.getState().links);
   const trafficDataRef = useRef(useNetworkStore.getState().trafficData);
 
-  const { devices, links, pingData, trafficData, thresholds, selectDevice, sidebarVisible, toggleSidebar } =
+  const { devices, links, pingData, trafficData, thresholds, selectDevice, sidebarVisible, toggleSidebar, wsConnected } =
     useNetworkStore();
 
   // Keep refs in sync.
@@ -315,7 +320,8 @@ export function NetworkMap() {
     }
   }, [links]);
 
-  // Animation loop: update node images + edge colours at ~10fps.
+  // Animation loop: update node images + edge colours only when changed,
+  // and redraw for particle animation at ~10fps.
   const updateNodes = useCallback(() => {
     // Skip all updates while drag mode is unlocked for smooth repositioning.
     if (dragUnlockedRef.current || isDraggingRef.current) {
@@ -329,8 +335,9 @@ export function NetworkMap() {
 
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
+    let anyChanged = false;
 
-    // Update node images from ping data.
+    // Update node images from ping data — only when label or image changed.
     for (const dev of devices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
@@ -354,14 +361,19 @@ export function NetworkMap() {
         statusLine = 'Never seen';
       }
 
-      nodes.update({
-        id: dev.id,
-        label: `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`,
-        image: imageUrl,
-      });
+      const label = `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`;
+      const prevLabel = lastNodeLabelsRef.current.get(dev.id);
+      const prevImage = lastNodeImagesRef.current.get(dev.id);
+
+      if (label !== prevLabel || imageUrl !== prevImage) {
+        nodes.update({ id: dev.id, label, image: imageUrl });
+        lastNodeLabelsRef.current.set(dev.id, label);
+        lastNodeImagesRef.current.set(dev.id, imageUrl);
+        anyChanged = true;
+      }
     }
 
-    // Update edge colours from traffic data.
+    // Update edge colours from traffic data — only when colour changed.
     for (const link of links) {
       const edgeId = `${link.from}-${link.to}`;
       const fromDev = link.from.split(':')[0];
@@ -382,23 +394,30 @@ export function NetworkMap() {
       const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
       const edgeColor = getTrafficColor(utilPct);
 
-      // Build traffic tooltip.
-      const txBps = fromTraffic?.txBps || toTraffic?.rxBps || 0;
-      const rxBps = fromTraffic?.rxBps || toTraffic?.txBps || 0;
-      const trafficLabel =
-        txBps > 0 || rxBps > 0
-          ? `\nTX: ${formatBandwidth(txBps)}\nRX: ${formatBandwidth(rxBps)}`
-          : '';
+      const prevColor = lastEdgeColorsRef.current.get(edgeId);
+      if (edgeColor !== prevColor) {
+        // Build traffic tooltip.
+        const txBps = fromTraffic?.txBps || toTraffic?.rxBps || 0;
+        const rxBps = fromTraffic?.rxBps || toTraffic?.txBps || 0;
+        const trafficLabel =
+          txBps > 0 || rxBps > 0
+            ? `\nTX: ${formatBandwidth(txBps)}\nRX: ${formatBandwidth(rxBps)}`
+            : '';
 
-      edges.update({
-        id: edgeId,
-        color: { color: edgeColor, hover: '#9CA3AF', highlight: '#60A5FA' },
-        title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${trafficLabel}`,
-      });
+        edges.update({
+          id: edgeId,
+          color: { color: edgeColor, hover: '#9CA3AF', highlight: '#60A5FA' },
+          title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${trafficLabel}`,
+        });
+        lastEdgeColorsRef.current.set(edgeId, edgeColor);
+        anyChanged = true;
+      }
     }
 
-    // Trigger redraw for particle animation.
-    networkRef.current?.redraw();
+    // Only redraw if something changed or particles are active.
+    if (anyChanged || particlesRef.current.size > 0) {
+      networkRef.current?.redraw();
+    }
 
     animFrameRef.current = requestAnimationFrame(() => {
       setTimeout(() => {
@@ -460,24 +479,45 @@ export function NetworkMap() {
           borderRadius: '8px',
         }}
       />
-      {/* Sidebar toggle */}
-      <button
-        onClick={toggleSidebar}
-        style={{
+      {/* Top-left controls: LIVE indicator + sidebar toggle */}
+      <div style={{
+        position: 'absolute',
+        top: '12px',
+        left: '12px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '6px',
+        zIndex: 50,
+      }}>
+        <div style={{
           ...btnStyle,
-          position: 'absolute',
-          top: '12px',
-          left: '12px',
-          zIndex: 50,
-          background: sidebarVisible ? '#374151' : '#1F2937',
-          border: sidebarVisible ? '1px solid #60A5FA' : '1px solid #374151',
-          color: sidebarVisible ? '#60A5FA' : '#D1D5DB',
-          fontSize: '16px',
-        }}
-        title={sidebarVisible ? 'Hide device list' : 'Show device list'}
-      >
-        &#9776;
-      </button>
+          width: '36px',
+          height: '20px',
+          fontSize: '9px',
+          fontWeight: 700,
+          letterSpacing: '0.5px',
+          cursor: 'default',
+          background: wsConnected ? '#065F46' : '#991B1B',
+          color: wsConnected ? '#6EE7B7' : '#FCA5A5',
+          border: wsConnected ? '1px solid #065F46' : '1px solid #991B1B',
+        }}>
+          {wsConnected ? 'LIVE' : 'OFF'}
+        </div>
+        <button
+          onClick={toggleSidebar}
+          style={{
+            ...btnStyle,
+            background: sidebarVisible ? '#374151' : '#1F2937',
+            border: sidebarVisible ? '1px solid #60A5FA' : '1px solid #374151',
+            color: sidebarVisible ? '#60A5FA' : '#D1D5DB',
+            fontSize: '16px',
+          }}
+          title={sidebarVisible ? 'Hide device list' : 'Show device list'}
+        >
+          &#9776;
+        </button>
+      </div>
       {/* Map controls */}
       <div style={{
         position: 'absolute',
