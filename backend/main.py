@@ -20,7 +20,7 @@ from api.websocket import ConnectionManager
 from config import NetMapConfig
 from models import DeviceConfig, DeviceType, PingState
 from monitors.ping_monitor import PingMonitor
-from monitors.topology_discovery import TopologyDiscovery
+from monitors.topology_discovery import TopologyDiscovery, _infer_device_type
 from monitors.traffic_monitor import TrafficMonitor
 
 logging.basicConfig(
@@ -56,12 +56,14 @@ def _load_custom_positions() -> dict[str, dict[str, float]]:
         return {}
 
 
-def _save_custom_positions(positions: dict[str, dict[str, float]]) -> None:
-    """Save custom device positions to JSON file."""
-    try:
+async def _save_custom_positions(positions: dict[str, dict[str, float]]) -> None:
+    """Save custom device positions to JSON file (async to avoid blocking event loop)."""
+    def _write() -> None:
         CUSTOM_POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(CUSTOM_POSITIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(positions, f, indent=2)
+    try:
+        await asyncio.to_thread(_write)
     except Exception:
         logger.warning("Failed to save custom positions", exc_info=True)
 
@@ -138,17 +140,8 @@ def _build_all_links_list() -> list[dict[str, Any]]:
 
 
 def _infer_type_str(board: str, platform: str) -> str:
-    """Infer device type string from board/platform."""
-    b = board.lower()
-    if "ccr" in b or "rb" in b or "hex" in b or "hap" in b:
-        return DeviceType.ROUTER.value
-    if "crs" in b or "css" in b:
-        return DeviceType.SWITCH.value
-    if "cap" in b or "wap" in b or "cube" in b or "disc" in b:
-        return DeviceType.AP.value
-    if platform.lower() != "mikrotik":
-        return DeviceType.OTHER.value
-    return DeviceType.ROUTER.value
+    """Infer device type string from board/platform (delegates to topology_discovery)."""
+    return _infer_device_type(board, platform)
 
 
 async def _on_ping_update(states: list[PingState]) -> None:
@@ -256,7 +249,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Start topology discovery (if enabled and any device has credentials).
     discovery = None
-    devices_with_creds = [d for d in cfg.devices if d.password]
+    devices_with_creds = [d for d in cfg.devices if d.password or d.ssh_key_file]
     if cfg.discovery_enabled and devices_with_creds:
         discovery = TopologyDiscovery(
             devices=cfg.devices,
@@ -337,7 +330,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="MikroTik-NetMap",
-    version="0.3.0",
+    version="0.4.0-beta",
     lifespan=lifespan,
 )
 
@@ -381,11 +374,12 @@ async def health():
     traffic = app_state.get("traffic_monitor")
     return {
         "status": "ok",
+        "version": "0.4.0-beta",
         "devices": len(cfg.devices) if cfg else 0,
         "ws_clients": ws_manager.client_count,
-        "ping_running": ping is not None and ping._running,
-        "discovery_running": discovery is not None and discovery._running,
-        "traffic_running": traffic is not None and traffic._running,
+        "ping_running": ping is not None and getattr(ping, "_running", False),
+        "discovery_running": discovery is not None and getattr(discovery, "_running", False),
+        "traffic_running": traffic is not None and getattr(traffic, "_running", False),
         "discovered_devices": len(discovery.discovered_devices) if discovery else 0,
         "discovered_links": len(discovery.discovered_links) if discovery else 0,
     }
@@ -453,7 +447,7 @@ async def websocket_endpoint(ws: WebSocket):
                             "y": float(position["y"]),
                         }
                         app_state["custom_positions"] = custom_pos
-                        _save_custom_positions(custom_pos)
+                        await _save_custom_positions(custom_pos)
 
                         # Broadcast to all clients.
                         await ws_manager.broadcast({

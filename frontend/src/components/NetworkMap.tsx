@@ -297,39 +297,66 @@ export function NetworkMap() {
     }
   }, [devices, thresholds]); // Don't include pingData — handled by animation loop.
 
-  // Sync links → vis edges.
+  // Sync links → vis edges (incremental to avoid flicker).
   useEffect(() => {
     const edges = edgesRef.current;
-    edges.clear();
+    const existingIds = new Set(edges.getIds());
+    const newIds = new Set<string>();
 
     for (const link of links) {
+      const edgeId = `${link.from}-${link.to}`;
+      newIds.add(edgeId);
+
       const fromDev = link.from.split(':')[0];
       const toDev = link.to.split(':')[0];
-      const fromIf = link.from.split(':')[1] || '';
-      const toIf = link.to.split(':')[1] || '';
+      const fromIf = link.from.split(':').slice(1).join(':');
+      const toIf = link.to.split(':').slice(1).join(':');
 
-      edges.add({
-        id: `${link.from}-${link.to}`,
+      const edgeData = {
+        id: edgeId,
         from: fromDev,
         to: toDev,
         width: linkWidth(link.speed),
         dashes: LINK_DASHES[link.type] ?? false,
         label: `${link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`}`,
         title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps`,
-      });
+      };
+
+      if (existingIds.has(edgeId)) {
+        edges.update(edgeData);
+      } else {
+        edges.add(edgeData);
+      }
+    }
+
+    // Remove edges no longer in links.
+    for (const id of existingIds) {
+      if (!newIds.has(id as string)) {
+        edges.remove(id);
+        lastEdgeColorsRef.current.delete(id as string);
+        particlesRef.current.delete(id as string);
+      }
     }
   }, [links]);
 
   // Animation loop: update node images + edge colours only when changed,
-  // and redraw for particle animation at ~10fps.
+  // and redraw for particle animation. Self-throttled to ~10fps via timestamp.
+  const lastAnimTimeRef = useRef(0);
+  const ANIM_INTERVAL_MS = 100; // ~10fps
+
   const updateNodes = useCallback(() => {
-    // Skip all updates while drag mode is unlocked for smooth repositioning.
+    const now = performance.now();
+
+    // Self-throttle: skip if less than ANIM_INTERVAL_MS since last real update.
+    if (now - lastAnimTimeRef.current < ANIM_INTERVAL_MS) {
+      animFrameRef.current = requestAnimationFrame(updateNodes);
+      return;
+    }
+    lastAnimTimeRef.current = now;
+
+    // Skip data updates while drag mode is unlocked for smooth repositioning.
     if (dragUnlockedRef.current || isDraggingRef.current) {
-      animFrameRef.current = requestAnimationFrame(() => {
-        setTimeout(() => {
-          animFrameRef.current = requestAnimationFrame(updateNodes);
-        }, 100);
-      });
+      animFrameRef.current = requestAnimationFrame(updateNodes);
       return;
     }
 
@@ -419,11 +446,7 @@ export function NetworkMap() {
       networkRef.current?.redraw();
     }
 
-    animFrameRef.current = requestAnimationFrame(() => {
-      setTimeout(() => {
-        animFrameRef.current = requestAnimationFrame(updateNodes);
-      }, 100);
-    });
+    animFrameRef.current = requestAnimationFrame(updateNodes);
   }, [devices, links, pingData, trafficData, thresholds]);
 
   // Start/restart animation loop when dependencies change.

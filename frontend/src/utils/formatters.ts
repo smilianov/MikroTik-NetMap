@@ -39,14 +39,3 @@ export function formatRtt(rttMs: number | null): string {
   if (rttMs < 1) return '<1 ms';
   return `${rttMs.toFixed(1)} ms`;
 }
-
-/** Device type to icon mapping. */
-export function getDeviceIcon(type: string): string {
-  switch (type) {
-    case 'router': return '🔲';
-    case 'switch': return '🔳';
-    case 'ap': return '📡';
-    case 'server': return '🖥️';
-    default: return '⬜';
-  }
-}

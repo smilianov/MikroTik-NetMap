@@ -5,12 +5,16 @@
 import { useNetworkStore } from '../stores/networkStore';
 
 export function StatusBar() {
-  const { devices, pingData } = useNetworkStore();
+  const { devices, pingData, thresholds } = useNetworkStore();
 
   let online = 0;
   let degraded = 0;
   let offline = 0;
   let unknown = 0;
+
+  // Use the first and last configured thresholds for consistent status classification.
+  const onlineMax = thresholds.length > 0 ? thresholds[0].maxSeconds : 35;
+  const offlineMax = thresholds.length > 0 ? thresholds[thresholds.length - 1].maxSeconds : 345;
 
   for (const dev of devices) {
     const ping = pingData[dev.id];
@@ -19,8 +23,8 @@ export function StatusBar() {
       continue;
     }
     const elapsed = (Date.now() - new Date(ping.lastSeen).getTime()) / 1000;
-    if (elapsed <= 5) online++;
-    else if (elapsed <= 30) degraded++;
+    if (elapsed <= onlineMax) online++;
+    else if (elapsed <= offlineMax) degraded++;
     else offline++;
   }
 

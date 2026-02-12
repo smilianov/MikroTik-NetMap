@@ -37,14 +37,17 @@ thresholds:
     label: "Down"
 
 # RouterOS API defaults (applied to devices that don't override)
-# api_type: "rest" (HTTPS port 443, RouterOS 7.1+) or "classic" (port 8728, RouterOS 6.49+)
+# api_type: "rest" (HTTPS port 443, RouterOS 7.1+),
+#           "classic" (port 8728, RouterOS 6.49+),
+#           "ssh" (port 22, any RouterOS — supports SSH key auth)
 api_defaults:
   username: admin
-  api_type: classic          # "rest" for HTTPS/443 or "classic" for port 8728
+  api_type: classic          # "rest", "classic", or "ssh"
   port: 8728
 
 # Device definitions
 devices:
+  # Example: password-based authentication (Classic API)
   - name: core-router
     host: 10.0.0.1
     type: router
@@ -61,11 +64,13 @@ devices:
     map: main
     position: {x: 400, y: 400}
 
+  # Example: SSH key-based authentication (no password needed)
   - name: branch-router
     host: 10.0.1.1
     type: router
     profile: edge
-    password: "${BRANCH_PASS}"
+    api_type: ssh
+    ssh_key_file: /app/config/ssh_keys/id_ed25519
     map: main
     position: {x: 700, y: 200}
 
@@ -88,13 +93,13 @@ links:
 
 # Traffic monitor settings
 # Queries /interface on devices with API credentials to collect bandwidth data.
-# Requires devices to have a password set.
+# Requires devices to have a password or SSH key configured.
 traffic:
   enabled: true          # enable interface traffic collection
   interval: 10           # seconds between queries per device
 
 # Auto-discovery settings
-# Queries /ip/neighbor on devices that have API credentials (password set).
+# Queries /ip/neighbor on devices that have API credentials (password or SSH key).
 # Discovered topology is persisted to config/discovered_topology.json.
 discovery:
   enabled: true          # enable MNDP/LLDP neighbor discovery

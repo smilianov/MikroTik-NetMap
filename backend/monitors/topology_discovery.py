@@ -116,8 +116,8 @@ class TopologyDiscovery:
         auto_add_links: bool = True,
         on_update: Callable[..., Any] | None = None,
     ) -> None:
-        # Only query devices that have API credentials.
-        self.devices = [d for d in devices if d.password]
+        # Only query devices that have API credentials (password or SSH key).
+        self.devices = [d for d in devices if d.password or d.ssh_key_file]
         self.interval = interval
         self.auto_add_devices = auto_add_devices
         self.auto_add_links = auto_add_links
@@ -228,6 +228,7 @@ class TopologyDiscovery:
             port=device.port,
             api_type=device.api_type,
             timeout=15.0,
+            ssh_key_file=device.ssh_key_file,
         )
         try:
             neighbors = await client.get_neighbors()

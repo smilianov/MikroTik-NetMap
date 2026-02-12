@@ -1,10 +1,11 @@
 """Async MikroTik RouterOS API client.
 
-Supports two API modes:
+Supports three connection modes:
   - REST (httpx, HTTPS port 443) — RouterOS 7.1+
   - Classic (routeros_api, port 8728) — RouterOS 6.49+
+  - SSH (asyncssh, port 22) — any RouterOS version, supports key auth
 
-Both expose the same async interface: get(), get_neighbors(), close().
+All expose the same async interface: get(), get_neighbors(), close().
 """
 
 from __future__ import annotations
@@ -162,9 +163,21 @@ def create_client(
     port: int | None = None,
     api_type: str = "rest",
     timeout: float = 15.0,
-) -> MikroTikClient | MikroTikClassicClient:
+    ssh_key_file: str = "",
+) -> "MikroTikClient | MikroTikClassicClient | MikroTikSSHClient":
     """Factory: create the right client based on api_type."""
-    if api_type == "classic":
+    if api_type == "ssh":
+        from mikrotik.ssh_client import MikroTikSSHClient
+
+        return MikroTikSSHClient(
+            host=host,
+            username=username,
+            password=password,
+            key_file=ssh_key_file,
+            port=port or 22,
+            timeout=timeout,
+        )
+    elif api_type == "classic":
         return MikroTikClassicClient(
             host=host,
             username=username,

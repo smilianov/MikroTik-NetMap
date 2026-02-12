@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -36,7 +36,8 @@ class DeviceConfig(BaseModel):
     type: DeviceType = DeviceType.ROUTER
     username: str = "admin"
     password: str = ""
-    api_type: str = "rest"
+    ssh_key_file: str = ""  # Path to SSH private key (for api_type: ssh)
+    api_type: str = "rest"  # "rest", "classic", or "ssh"
     port: int | None = None
     profile: str = "edge"
     map: str = "main"
@@ -135,5 +136,5 @@ class WSMessage(BaseModel):
     """WebSocket message envelope."""
 
     type: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     data: Any = None
