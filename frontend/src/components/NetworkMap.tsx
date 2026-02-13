@@ -12,6 +12,9 @@ import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
 import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
 import { sendWsMessage } from '../hooks/useWebSocket';
 import { formatBandwidth } from '../utils/formatters';
+import { ContextMenu } from './ContextMenu';
+import { ConfirmDialog } from './ConfirmDialog';
+import { blacklistDevice as apiBlacklist } from '../api/visibility';
 
 /** Link dash pattern per link type. */
 const LINK_DASHES: Record<string, boolean | number[]> = {
@@ -61,8 +64,13 @@ export function NetworkMap() {
   const linksRef = useRef(useNetworkStore.getState().links);
   const trafficDataRef = useRef(useNetworkStore.getState().trafficData);
 
-  const { devices, links, pingData, trafficData, thresholds, selectDevice, sidebarVisible, toggleSidebar, wsConnected } =
+  const { devices, links, pingData, trafficData, thresholds, hiddenDevices, selectDevice, sidebarVisible, toggleSidebar, wsConnected } =
     useNetworkStore();
+
+  // Context menu state.
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null);
+  // Confirm dialog state (for blacklist).
+  const [confirmTarget, setConfirmTarget] = useState<string | null>(null);
 
   // Keep refs in sync.
   useEffect(() => {
@@ -144,6 +152,20 @@ export function NetworkMap() {
     network.on('click', (params) => {
       if (params.nodes.length === 0) {
         selectDevice(null);
+      }
+    });
+
+    // Right-click → context menu.
+    network.on('oncontext', (params) => {
+      params.event.preventDefault();
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        const rect = containerRef.current!.getBoundingClientRect();
+        setContextMenu({
+          x: params.event.clientX ?? (params.pointer.DOM.x + rect.left),
+          y: params.event.clientY ?? (params.pointer.DOM.y + rect.top),
+          deviceId: nodeId,
+        });
       }
     });
 
@@ -260,13 +282,14 @@ export function NetworkMap() {
     networkRef.current?.setOptions({ interaction: { dragNodes: dragUnlocked } });
   }, [dragUnlocked]);
 
-  // Sync devices → vis nodes when config changes.
+  // Sync devices → vis nodes when config changes (filter hidden devices).
   useEffect(() => {
     const nodes = nodesRef.current;
     const existingIds = new Set(nodes.getIds());
-    const configIds = new Set(devices.map((d) => d.id));
+    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id));
+    const configIds = new Set(visibleDevices.map((d) => d.id));
 
-    for (const dev of devices) {
+    for (const dev of visibleDevices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
       const imageUrl = getDeviceImageUrl(dev.type, color);
@@ -289,21 +312,28 @@ export function NetworkMap() {
       }
     }
 
-    // Remove nodes no longer in config.
+    // Remove nodes no longer in config or hidden.
     for (const id of existingIds) {
       if (!configIds.has(id as string)) {
         nodes.remove(id);
       }
     }
-  }, [devices, thresholds]); // Don't include pingData — handled by animation loop.
+  }, [devices, thresholds, hiddenDevices]); // Don't include pingData — handled by animation loop.
 
-  // Sync links → vis edges (incremental to avoid flicker).
+  // Sync links → vis edges (incremental, filter hidden device links).
   useEffect(() => {
     const edges = edgesRef.current;
     const existingIds = new Set(edges.getIds());
     const newIds = new Set<string>();
 
-    for (const link of links) {
+    // Filter out links where either endpoint is hidden.
+    const visibleLinks = links.filter((l) => {
+      const fromDev = l.from.split(':')[0];
+      const toDev = l.to.split(':')[0];
+      return !hiddenDevices.has(fromDev) && !hiddenDevices.has(toDev);
+    });
+
+    for (const link of visibleLinks) {
       const edgeId = `${link.from}-${link.to}`;
       newIds.add(edgeId);
 
@@ -337,7 +367,7 @@ export function NetworkMap() {
         particlesRef.current.delete(id as string);
       }
     }
-  }, [links]);
+  }, [links, hiddenDevices]);
 
   // Animation loop: update node images + edge colours only when changed,
   // and redraw for particle animation. Self-throttled to ~10fps via timestamp.
@@ -365,7 +395,8 @@ export function NetworkMap() {
     let anyChanged = false;
 
     // Update node images from ping data — only when label or image changed.
-    for (const dev of devices) {
+    const visDevices = devices.filter((d) => !hiddenDevices.has(d.id));
+    for (const dev of visDevices) {
       const ping = pingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
       const imageUrl = getDeviceImageUrl(dev.type, color);
@@ -569,6 +600,31 @@ export function NetworkMap() {
           [ ]
         </button>
       </div>
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          deviceId={contextMenu.deviceId}
+          onClose={() => setContextMenu(null)}
+          onBlacklist={(id) => setConfirmTarget(id)}
+        />
+      )}
+
+      {/* Confirm dialog for blacklist/remove */}
+      {confirmTarget && (
+        <ConfirmDialog
+          title="Remove Device"
+          message={`Are you sure you want to remove "${confirmTarget}"? It will be blacklisted and will not reappear on the map.`}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmTarget(null)}
+          onConfirm={async () => {
+            await apiBlacklist(confirmTarget);
+            setConfirmTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }

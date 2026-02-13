@@ -115,6 +115,7 @@ class TopologyDiscovery:
         auto_add_devices: bool = False,
         auto_add_links: bool = True,
         on_update: Callable[..., Any] | None = None,
+        visibility_manager: Any | None = None,
     ) -> None:
         # Only query devices that have API credentials (password or SSH key).
         self.devices = [d for d in devices if d.password or d.ssh_key_file]
@@ -122,6 +123,7 @@ class TopologyDiscovery:
         self.auto_add_devices = auto_add_devices
         self.auto_add_links = auto_add_links
         self.on_update = on_update
+        self._visibility = visibility_manager
 
         # All configured device names (for determining which neighbors are "new").
         self._configured_names: set[str] = {d.name for d in devices}
@@ -444,11 +446,19 @@ class TopologyDiscovery:
             key = (hl["local_device"], remote_id)
             by_local_remote[key] = hl
 
-            # Track potential new devices.
+            # Track potential new devices (skip blacklisted).
             if (
                 remote_id not in self._configured_names
                 and remote_id not in self.discovered_devices
                 and hl.get("remote_address")
+                and not (
+                    self._visibility
+                    and self._visibility.is_blacklisted_by_identity(
+                        name=remote_id,
+                        host=hl.get("remote_address", ""),
+                        mac=hl.get("remote_mac", ""),
+                    )
+                )
             ):
                 new_device_candidates[remote_id] = hl
 
@@ -574,6 +584,28 @@ class TopologyDiscovery:
             "added_links": added_links,
             "removed_links": removed_links,
         }
+
+    def remove_device(self, device_id: str) -> list[str]:
+        """Remove a discovered device and its links. Returns removed link IDs."""
+        removed_link_ids: list[str] = []
+        self.discovered_devices.pop(device_id, None)
+        self._device_positions.pop(device_id, None)
+        self._configured_names.discard(device_id)
+
+        # Remove all links involving this device.
+        for link_id in list(self.discovered_links.keys()):
+            link = self.discovered_links[link_id]
+            from_dev = link.from_device.split(":")[0]
+            to_dev = link.to_device.split(":")[0]
+            if device_id in (from_dev, to_dev):
+                del self.discovered_links[link_id]
+                removed_link_ids.append(link_id)
+
+        self._save_persistence()
+        logger.info(
+            "Removed device %s and %d links", device_id, len(removed_link_ids),
+        )
+        return removed_link_ids
 
     async def _loop(self) -> None:
         """Main discovery loop."""

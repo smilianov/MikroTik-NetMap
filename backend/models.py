@@ -132,6 +132,16 @@ class DiscoveredLink(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class BlacklistedDevice(BaseModel):
+    """A device that has been blacklisted (permanently removed)."""
+
+    id: str
+    host: str = ""
+    mac: str = ""
+    reason: str = ""
+    blacklisted_at: datetime
+
+
 class WSMessage(BaseModel):
     """WebSocket message envelope."""
 

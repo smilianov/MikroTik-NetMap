@@ -49,6 +49,10 @@ interface NetworkState {
   // Real-time traffic state.
   trafficData: TrafficData;
 
+  // Visibility state.
+  hiddenDevices: Set<string>;
+  blacklistedDevices: string[];
+
   // UI state.
   selectedDevice: string | null;
   sidebarVisible: boolean;
@@ -64,7 +68,10 @@ interface NetworkState {
     addedDevices: DeviceInfo[],
     addedLinks: LinkInfo[],
     removedLinks: string[],
+    removedDevices?: string[],
   ) => void;
+  setVisibility: (hidden: string[], blacklisted: string[]) => void;
+  removeDevice: (deviceId: string) => void;
   selectDevice: (deviceId: string | null) => void;
   toggleSidebar: () => void;
   setCurrentMap: (mapName: string) => void;
@@ -77,6 +84,8 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   thresholds: DEFAULT_THRESHOLDS,
   pingData: {},
   trafficData: {},
+  hiddenDevices: new Set<string>(),
+  blacklistedDevices: [],
   selectedDevice: null,
   sidebarVisible: false,
   currentMap: 'main',
@@ -107,10 +116,16 @@ export const useNetworkStore = create<NetworkState>((set) => ({
       ),
     })),
 
-  mergeTopology: (addedDevices, addedLinks, removedLinks) =>
+  mergeTopology: (addedDevices, addedLinks, removedLinks, removedDevices) =>
     set((state) => {
+      // Remove devices if requested.
+      const removedDevSet = new Set(removedDevices || []);
+      let baseDevices = removedDevSet.size > 0
+        ? state.devices.filter((d) => !removedDevSet.has(d.id))
+        : state.devices;
+
       // Merge new devices (skip duplicates).
-      const existingIds = new Set(state.devices.map((d) => d.id));
+      const existingIds = new Set(baseDevices.map((d) => d.id));
       const newDevices = addedDevices.filter((d) => !existingIds.has(d.id));
 
       // Build a set of removed link IDs for filtering.
@@ -128,10 +143,23 @@ export const useNetworkStore = create<NetworkState>((set) => ({
       );
 
       return {
-        devices: [...state.devices, ...newDevices],
+        devices: [...baseDevices, ...newDevices],
         links: [...filteredLinks, ...newLinks],
       };
     }),
+
+  setVisibility: (hidden, blacklisted) =>
+    set({ hiddenDevices: new Set(hidden), blacklistedDevices: blacklisted }),
+
+  removeDevice: (deviceId) =>
+    set((state) => ({
+      devices: state.devices.filter((d) => d.id !== deviceId),
+      links: state.links.filter((l) => {
+        const fromDev = l.from.split(':')[0];
+        const toDev = l.to.split(':')[0];
+        return fromDev !== deviceId && toDev !== deviceId;
+      }),
+    })),
 
   selectDevice: (deviceId) => set({ selectedDevice: deviceId }),
   toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),

@@ -28,6 +28,7 @@ export function useWebSocket() {
     updateTraffic,
     updateDevicePosition,
     mergeTopology,
+    setVisibility,
     setWsConnected,
   } = useNetworkStore();
 
@@ -89,6 +90,7 @@ export function useWebSocket() {
               label: t.label,
             })),
           );
+          setVisibility(msg.hidden || [], msg.blacklisted || []);
           break;
 
         case 'ping_state':
@@ -120,7 +122,12 @@ export function useWebSocket() {
               type: l.type,
             })),
             msg.removed_links || [],
+            msg.removed_devices || [],
           );
+          break;
+
+        case 'visibility_update':
+          setVisibility(msg.hidden || [], msg.blacklisted || []);
           break;
 
         case 'traffic_state':
@@ -164,5 +171,5 @@ export function useWebSocket() {
       _wsSendFn = null;
       wsRef.current?.close();
     };
-  }, [setConfig, updatePingState, updateTraffic, updateDevicePosition, mergeTopology, setWsConnected]);
+  }, [setConfig, updatePingState, updateTraffic, updateDevicePosition, mergeTopology, setVisibility, setWsConnected]);
 }

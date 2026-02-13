@@ -5,7 +5,8 @@
 import { useNetworkStore } from '../stores/networkStore';
 
 export function StatusBar() {
-  const { devices, pingData, thresholds } = useNetworkStore();
+  const { devices, pingData, thresholds, hiddenDevices } = useNetworkStore();
+  const hiddenCount = devices.filter((d) => hiddenDevices.has(d.id)).length;
 
   let online = 0;
   let degraded = 0;
@@ -44,6 +45,7 @@ export function StatusBar() {
         <StatChip color="#FFD700" label="Degraded" count={degraded} />
         <StatChip color="#EF4444" label="Offline" count={offline} />
         <StatChip color="#6B7280" label="Unknown" count={unknown} />
+        {hiddenCount > 0 && <StatChip color="#4B5563" label="Hidden" count={hiddenCount} />}
       </div>
 
       {/* Center: title */}

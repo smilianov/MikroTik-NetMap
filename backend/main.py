@@ -16,12 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.devices import router as devices_router, set_app_state
+from api.visibility import router as visibility_router, set_app_state as set_visibility_state
 from api.websocket import ConnectionManager
 from config import NetMapConfig
 from models import DeviceConfig, DeviceType, PingState
 from monitors.ping_monitor import PingMonitor
 from monitors.topology_discovery import TopologyDiscovery, _infer_device_type
 from monitors.traffic_monitor import TrafficMonitor
+from visibility_manager import VisibilityManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,11 +75,14 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
     cfg = app_state.get("config")
     discovery = app_state.get("topology_discovery")
     custom_pos = app_state.get("custom_positions", {})
+    visibility = app_state.get("visibility_manager")
     if not cfg:
         return []
 
     devices = []
     for d in cfg.devices:
+        if visibility and visibility.is_blacklisted(d.name):
+            continue
         pos = custom_pos.get(d.name, {"x": d.position.x, "y": d.position.y})
         devices.append({
             "id": d.name,
@@ -91,6 +96,8 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
 
     if discovery:
         for dd in discovery.discovered_devices.values():
+            if visibility and visibility.is_blacklisted(dd.name):
+                continue
             # Don't duplicate devices already in config.
             if any(d["id"] == dd.name for d in devices):
                 continue
@@ -237,6 +244,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         len(cfg.thresholds),
     )
 
+    # Load visibility state (hidden / blacklisted devices).
+    visibility = VisibilityManager()
+    app_state["visibility_manager"] = visibility
+
     # Start ping monitor.
     ping = PingMonitor(
         devices=cfg.devices,
@@ -257,6 +268,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             auto_add_devices=cfg.discovery_auto_add_devices,
             auto_add_links=cfg.discovery_auto_add_links,
             on_update=_on_topology_update,
+            visibility_manager=visibility,
         )
         discovery.start()
         app_state["topology_discovery"] = discovery
@@ -268,7 +280,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # Seed PingMonitor with previously discovered devices (persisted across restarts).
         if discovery.discovered_devices:
+            seeded = 0
             for dd in discovery.discovered_devices.values():
+                if visibility.is_blacklisted(dd.name):
+                    continue
                 dev_config = DeviceConfig(
                     name=dd.name,
                     host=dd.host,
@@ -276,9 +291,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     position=dd.position,
                 )
                 ping.add_device(dev_config)
+                seeded += 1
             logger.info(
                 "Seeded PingMonitor with %d persisted discovered devices",
-                len(discovery.discovered_devices),
+                seeded,
             )
     else:
         if not cfg.discovery_enabled:
@@ -314,7 +330,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("TrafficMonitor skipped: no devices have API credentials")
 
     # Share state with API routers.
+    app_state["ws_manager"] = ws_manager
     set_app_state(app_state)
+    set_visibility_state(app_state)
 
     logger.info("MikroTik-NetMap started on %s:%d", cfg.host, cfg.port)
     yield
@@ -342,7 +360,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST API.
+# REST API (visibility first — its fixed paths must match before /{device_id}).
+app.include_router(visibility_router)
 app.include_router(devices_router)
 
 
@@ -409,6 +428,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Send config (thresholds, maps, devices, links — including discovered).
     cfg = app_state.get("config")
+    visibility = app_state.get("visibility_manager")
     if cfg:
         await ws.send_json({
             "type": "config",
@@ -418,6 +438,8 @@ async def websocket_endpoint(ws: WebSocket):
             ],
             "devices": _build_all_devices_list(),
             "links": _build_all_links_list(),
+            "hidden": visibility.get_hidden_list() if visibility else [],
+            "blacklisted": [d.id for d in visibility.blacklisted.values()] if visibility else [],
         })
 
     # Send latest traffic state if available.
