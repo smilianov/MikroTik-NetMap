@@ -5,7 +5,8 @@ Supports three connection modes:
   - Classic (routeros_api, port 8728) — RouterOS 6.49+
   - SSH (asyncssh, port 22) — any RouterOS version, supports key auth
 
-All expose the same async interface: get(), get_neighbors(), close().
+All expose the same async interface: get(), get_neighbors(),
+get_interfaces(), get_ethernet_interfaces(), close().
 """
 
 from __future__ import annotations
@@ -62,6 +63,10 @@ class MikroTikClient:
     async def get_interfaces(self) -> list[dict[str, Any]]:
         """Query /interface for all interface stats."""
         return await self.get("interface")
+
+    async def get_ethernet_interfaces(self) -> list[dict[str, Any]]:
+        """Query /interface/ethernet for physical port speeds."""
+        return await self.get("interface/ethernet")
 
     async def get_system_resource(self) -> dict[str, Any]:
         """Query /system/resource for CPU, memory, uptime."""
@@ -146,6 +151,10 @@ class MikroTikClassicClient:
     async def get_interfaces(self) -> list[dict[str, Any]]:
         """Query /interface for all interface stats."""
         return await self.get("interface")
+
+    async def get_ethernet_interfaces(self) -> list[dict[str, Any]]:
+        """Query /interface/ethernet for physical port speeds."""
+        return await self.get("interface/ethernet")
 
     async def get_system_resource(self) -> dict[str, Any]:
         """Query /system/resource for CPU, memory, uptime."""

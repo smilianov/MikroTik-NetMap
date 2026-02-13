@@ -52,9 +52,20 @@ class TrafficMonitor:
 
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        self._tracked_names: set[str] = {d.name for d in self.devices}
 
         # Latest computed traffic — sent to newly connecting WebSocket clients.
         self.latest_traffic: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def add_device(self, device: DeviceConfig) -> None:
+        """Dynamically add a device for traffic collection (e.g. newly discovered)."""
+        if device.name in self._tracked_names:
+            return
+        if not device.password and not device.ssh_key_file:
+            return
+        self.devices.append(device)
+        self._tracked_names.add(device.name)
+        logger.info("TrafficMonitor: added device %s (%s)", device.name, device.host)
 
     # ------------------------------------------------------------------
     # Device query

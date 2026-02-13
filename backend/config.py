@@ -66,11 +66,19 @@ class NetMapConfig:
         self.ping_interval: float = ping.get("interval", 2)
         self.ping_timeout: float = ping.get("timeout", 1)
 
-        # API defaults.
+        # API defaults (applied to devices that don't override, and to discovered devices).
         api_defaults = data.get("api_defaults", {})
         default_username = api_defaults.get("username", "admin")
+        default_password = api_defaults.get("password", "")
         default_api_type = api_defaults.get("api_type", "rest")
         default_api_port = api_defaults.get("port", None)
+
+        self.api_defaults: dict = {
+            "username": default_username,
+            "password": default_password,
+            "api_type": default_api_type,
+            "port": default_api_port,
+        }
 
         # Color thresholds.
         raw_thresholds = data.get("thresholds", DEFAULT_THRESHOLDS)

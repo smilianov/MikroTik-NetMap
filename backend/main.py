@@ -16,9 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.devices import router as devices_router, set_app_state
+from api.links import router as links_router, set_app_state as set_links_state
 from api.visibility import router as visibility_router, set_app_state as set_visibility_state
 from api.websocket import ConnectionManager
 from config import NetMapConfig
+from manual_link_manager import ManualLinkManager
 from models import DeviceConfig, DeviceType, PingState
 from monitors.ping_monitor import PingMonitor
 from monitors.topology_discovery import TopologyDiscovery, _infer_device_type
@@ -141,6 +143,19 @@ def _build_all_links_list() -> list[dict[str, Any]]:
                 "speed": dl.speed,
                 "type": dl.type.value,
                 "discovered": True,
+                "confirmed": dl.confirmed,
+            })
+
+    # Include manual links.
+    manual_mgr = app_state.get("manual_link_manager")
+    if manual_mgr:
+        for ml in manual_mgr.get_all():
+            links.append({
+                "from": ml["from"],
+                "to": ml["to"],
+                "speed": ml.get("speed", 1000),
+                "type": ml.get("type", "wired"),
+                "manual": True,
             })
 
     return links
@@ -174,17 +189,33 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
     added_links = changes.get("added_links", [])
     removed_links = changes.get("removed_links", [])
 
-    # Add newly discovered devices to the ping monitor.
+    cfg = app_state.get("config")
+    api_defaults = cfg.api_defaults if cfg else {}
+
+    # Add newly discovered devices to the ping monitor and traffic monitor.
     ping = app_state.get("ping_monitor")
-    if ping and added_devices:
-        for dd in added_devices:
-            dev_config = DeviceConfig(
+    traffic = app_state.get("traffic_monitor")
+    for dd in added_devices:
+        dev_config = DeviceConfig(
+            name=dd.name,
+            host=dd.host,
+            type=DeviceType(_infer_type_str(dd.board, dd.platform)),
+            position=dd.position,
+        )
+        if ping:
+            ping.add_device(dev_config)
+
+        # Also add to traffic monitor if api_defaults has credentials.
+        if traffic and api_defaults.get("password"):
+            traffic_config = DeviceConfig(
                 name=dd.name,
                 host=dd.host,
-                type=DeviceType(_infer_type_str(dd.board, dd.platform)),
-                position=dd.position,
+                username=api_defaults.get("username", "admin"),
+                password=api_defaults["password"],
+                api_type=api_defaults.get("api_type", "rest"),
+                port=api_defaults.get("port"),
             )
-            ping.add_device(dev_config)
+            traffic.add_device(traffic_config)
 
     # Broadcast topology update to all WebSocket clients.
     await ws_manager.broadcast({
@@ -210,6 +241,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "speed": dl.speed,
                 "type": dl.type.value,
                 "discovered": True,
+                "confirmed": dl.confirmed,
             }
             for dl in added_links
         ],
@@ -248,6 +280,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     visibility = VisibilityManager()
     app_state["visibility_manager"] = visibility
 
+    # Load manual links.
+    manual_links = ManualLinkManager()
+    app_state["manual_link_manager"] = manual_links
+
     # Start ping monitor.
     ping = PingMonitor(
         devices=cfg.devices,
@@ -258,10 +294,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ping.start()
     app_state["ping_monitor"] = ping
 
-    # Start topology discovery (if enabled and any device has credentials).
+    # Start topology discovery (if enabled and any device has credentials or api_defaults has password).
     discovery = None
     devices_with_creds = [d for d in cfg.devices if d.password or d.ssh_key_file]
-    if cfg.discovery_enabled and devices_with_creds:
+    has_default_creds = bool(cfg.api_defaults.get("password"))
+    if cfg.discovery_enabled and (devices_with_creds or has_default_creds):
         discovery = TopologyDiscovery(
             devices=cfg.devices,
             interval=cfg.discovery_interval,
@@ -269,12 +306,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             auto_add_links=cfg.discovery_auto_add_links,
             on_update=_on_topology_update,
             visibility_manager=visibility,
+            api_defaults=cfg.api_defaults,
         )
         discovery.start()
         app_state["topology_discovery"] = discovery
         logger.info(
-            "TopologyDiscovery enabled: %d devices with credentials, interval=%ds",
+            "TopologyDiscovery enabled: %d devices with credentials, "
+            "api_defaults password=%s, interval=%ds",
             len(devices_with_creds),
+            "yes" if has_default_creds else "no",
             cfg.discovery_interval,
         )
 
@@ -299,7 +339,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         if not cfg.discovery_enabled:
             logger.info("TopologyDiscovery disabled in config")
-        elif not devices_with_creds:
+        elif not devices_with_creds and not has_default_creds:
             logger.info("TopologyDiscovery skipped: no devices have API credentials")
 
     # Load custom device positions (from drag-to-reposition).
@@ -308,31 +348,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if custom_positions:
         logger.info("Loaded custom positions for %d devices", len(custom_positions))
 
-    # Start traffic monitor (if enabled and any device has credentials).
+    # Start traffic monitor (if enabled and any device has credentials or api_defaults has password).
     traffic = None
-    if cfg.traffic_enabled and devices_with_creds:
+    if cfg.traffic_enabled and (devices_with_creds or has_default_creds):
         traffic = TrafficMonitor(
             devices=cfg.devices,
             interval=cfg.traffic_interval,
             on_update=_on_traffic_update,
         )
+        # Seed with persisted discovered devices that have api_defaults credentials.
+        if discovery and discovery.discovered_devices and has_default_creds:
+            for dd in discovery.discovered_devices.values():
+                if visibility.is_blacklisted(dd.name):
+                    continue
+                traffic_dev = DeviceConfig(
+                    name=dd.name,
+                    host=dd.host,
+                    username=cfg.api_defaults.get("username", "admin"),
+                    password=cfg.api_defaults["password"],
+                    api_type=cfg.api_defaults.get("api_type", "rest"),
+                    port=cfg.api_defaults.get("port"),
+                )
+                traffic.add_device(traffic_dev)
         traffic.start()
         app_state["traffic_monitor"] = traffic
         logger.info(
             "TrafficMonitor enabled: %d devices with credentials, interval=%ds",
-            len(devices_with_creds),
+            len(traffic.devices),
             cfg.traffic_interval,
         )
     else:
         if not cfg.traffic_enabled:
             logger.info("TrafficMonitor disabled in config")
-        elif not devices_with_creds:
+        elif not devices_with_creds and not has_default_creds:
             logger.info("TrafficMonitor skipped: no devices have API credentials")
 
     # Share state with API routers.
     app_state["ws_manager"] = ws_manager
     set_app_state(app_state)
     set_visibility_state(app_state)
+    set_links_state(app_state)
 
     logger.info("MikroTik-NetMap started on %s:%d", cfg.host, cfg.port)
     yield
@@ -360,8 +415,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST API (visibility first — its fixed paths must match before /{device_id}).
+# REST API (visibility and links first — fixed paths must match before /{device_id}).
 app.include_router(visibility_router)
+app.include_router(links_router)
 app.include_router(devices_router)
 
 

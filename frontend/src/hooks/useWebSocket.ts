@@ -83,6 +83,8 @@ export function useWebSocket() {
               to: l.to,
               speed: l.speed,
               type: l.type,
+              confirmed: l.confirmed,
+              manual: l.manual,
             })),
             (msg.thresholds || []).map((t: any) => ({
               maxSeconds: t.max_seconds,
@@ -120,6 +122,8 @@ export function useWebSocket() {
               to: l.to,
               speed: l.speed,
               type: l.type,
+              confirmed: l.confirmed,
+              manual: l.manual,
             })),
             msg.removed_links || [],
             msg.removed_devices || [],

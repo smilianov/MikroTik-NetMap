@@ -27,6 +27,8 @@ export interface LinkInfo {
   to: string;
   speed: number;
   type: string;
+  confirmed?: boolean;
+  manual?: boolean;
 }
 
 export interface InterfaceTraffic {

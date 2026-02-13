@@ -14,7 +14,9 @@ import { sendWsMessage } from '../hooks/useWebSocket';
 import { formatBandwidth } from '../utils/formatters';
 import { ContextMenu } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
+import { LinkDialog } from './LinkDialog';
 import { blacklistDevice as apiBlacklist } from '../api/visibility';
+import { createLink as apiCreateLink, deleteLink as apiDeleteLink } from '../api/links';
 
 /** Link dash pattern per link type. */
 const LINK_DASHES: Record<string, boolean | number[]> = {
@@ -71,6 +73,14 @@ export function NetworkMap() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null);
   // Confirm dialog state (for blacklist).
   const [confirmTarget, setConfirmTarget] = useState<string | null>(null);
+  // Link creation mode.
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkFirstDevice, setLinkFirstDevice] = useState<string | null>(null);
+  const [linkDialog, setLinkDialog] = useState<{ from: string; to: string } | null>(null);
+  const linkModeRef = useRef(false);
+  const linkFirstDeviceRef = useRef<string | null>(null);
+  // Edge context menu state (for right-click on edges).
+  const [edgeContextMenu, setEdgeContextMenu] = useState<{ x: number; y: number; edgeId: string; isManual: boolean } | null>(null);
 
   // Keep refs in sync.
   useEffect(() => {
@@ -79,6 +89,25 @@ export function NetworkMap() {
   useEffect(() => {
     trafficDataRef.current = trafficData;
   }, [trafficData]);
+  useEffect(() => {
+    linkModeRef.current = linkMode;
+    linkFirstDeviceRef.current = linkFirstDevice;
+  }, [linkMode, linkFirstDevice]);
+
+  // Escape key → cancel link mode or close edge context menu.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (linkMode) {
+          setLinkMode(false);
+          setLinkFirstDevice(null);
+        }
+        setEdgeContextMenu(null);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [linkMode]);
 
   // Pre-warm image cache with all threshold colors.
   useEffect(() => {
@@ -148,24 +177,45 @@ export function NetworkMap() {
       }
     });
 
-    // Single click → deselect.
+    // Single click → deselect or handle link mode.
     network.on('click', (params) => {
+      setEdgeContextMenu(null);
+      if (linkModeRef.current && params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        if (!linkFirstDeviceRef.current) {
+          setLinkFirstDevice(nodeId);
+        } else if (nodeId !== linkFirstDeviceRef.current) {
+          setLinkDialog({ from: linkFirstDeviceRef.current, to: nodeId });
+          setLinkFirstDevice(null);
+          setLinkMode(false);
+        }
+        return;
+      }
       if (params.nodes.length === 0) {
         selectDevice(null);
       }
     });
 
-    // Right-click → context menu.
+    // Right-click → context menu (nodes or edges).
     network.on('oncontext', (params) => {
       params.event.preventDefault();
+      const rect = containerRef.current!.getBoundingClientRect();
+      const x = params.event.clientX ?? (params.pointer.DOM.x + rect.left);
+      const y = params.event.clientY ?? (params.pointer.DOM.y + rect.top);
+
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0] as string;
-        const rect = containerRef.current!.getBoundingClientRect();
-        setContextMenu({
-          x: params.event.clientX ?? (params.pointer.DOM.x + rect.left),
-          y: params.event.clientY ?? (params.pointer.DOM.y + rect.top),
-          deviceId: nodeId,
-        });
+        setContextMenu({ x, y, deviceId: nodeId });
+        setEdgeContextMenu(null);
+      } else if (params.edges.length > 0) {
+        const edgeId = params.edges[0] as string;
+        // Check if the edge is a manual link.
+        const curLinks = linksRef.current;
+        const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
+        if (link?.manual) {
+          setEdgeContextMenu({ x, y, edgeId, isManual: true });
+          setContextMenu(null);
+        }
       }
     });
 
@@ -342,14 +392,30 @@ export function NetworkMap() {
       const fromIf = link.from.split(':').slice(1).join(':');
       const toIf = link.to.split(':').slice(1).join(':');
 
+      // Build edge label: speed + abbreviated interface names for confirmed links.
+      const speedLabel = link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`;
+      const ifLabel = (fromIf && fromIf !== 'auto' && toIf && toIf !== 'auto')
+        ? `${fromIf} \u2194 ${toIf}`
+        : '';
+      const edgeLabel = ifLabel ? `${speedLabel}\n${ifLabel}` : speedLabel;
+
+      // Confirmed status label.
+      const statusTag = link.manual ? ' [manual]' : link.confirmed ? '' : ' [unconfirmed]';
+
+      // Dash pattern: unconfirmed links get a distinct dash, manual links get blue-ish.
+      let dashes: boolean | number[] = LINK_DASHES[link.type] ?? false;
+      if (!link.confirmed && !link.manual && link.type === 'wired') {
+        dashes = [6, 6];
+      }
+
       const edgeData = {
         id: edgeId,
         from: fromDev,
         to: toDev,
         width: linkWidth(link.speed),
-        dashes: LINK_DASHES[link.type] ?? false,
-        label: `${link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`}`,
-        title: `${fromDev}:${fromIf} ↔ ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps`,
+        dashes,
+        label: edgeLabel,
+        title: `${fromDev}:${fromIf} \u2194 ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${statusTag}`,
       };
 
       if (existingIds.has(edgeId)) {
@@ -594,12 +660,56 @@ export function NetworkMap() {
         >
           {dragUnlocked ? '\u{1F513}' : '\u{1F512}'}
         </button>
+        <button
+          onClick={() => {
+            if (linkMode) {
+              setLinkMode(false);
+              setLinkFirstDevice(null);
+            } else {
+              setLinkMode(true);
+              setLinkFirstDevice(null);
+            }
+          }}
+          style={{
+            ...btnStyle,
+            background: linkMode ? '#1E3A5F' : '#1F2937',
+            color: linkMode ? '#60A5FA' : '#D1D5DB',
+            border: linkMode ? '1px solid #3B82F6' : '1px solid #374151',
+            fontSize: '14px',
+          }}
+          title={linkMode ? 'Cancel link creation (Esc)' : 'Create manual link'}
+        >
+          {'\u{1F517}'}
+        </button>
         <button onClick={handleZoomIn} style={btnStyle} title="Zoom in">+</button>
         <button onClick={handleZoomOut} style={btnStyle} title="Zoom out">&minus;</button>
         <button onClick={handleFitAll} style={{ ...btnStyle, fontSize: '13px', fontWeight: 700 }} title="Fit all">
           [ ]
         </button>
       </div>
+
+      {/* Link mode indicator */}
+      {linkMode && (
+        <div style={{
+          position: 'absolute',
+          bottom: '16px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#1E3A5F',
+          border: '1px solid #3B82F6',
+          borderRadius: '8px',
+          padding: '8px 16px',
+          color: '#DBEAFE',
+          fontSize: '13px',
+          fontWeight: 600,
+          zIndex: 50,
+          whiteSpace: 'nowrap',
+        }}>
+          {linkFirstDevice
+            ? `Click second device to link with "${linkFirstDevice}" (Esc to cancel)`
+            : 'Click first device to start link (Esc to cancel)'}
+        </div>
+      )}
 
       {/* Right-click context menu */}
       {contextMenu && (
@@ -622,6 +732,58 @@ export function NetworkMap() {
           onConfirm={async () => {
             await apiBlacklist(confirmTarget);
             setConfirmTarget(null);
+          }}
+        />
+      )}
+
+      {/* Edge context menu (manual links only) */}
+      {edgeContextMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: edgeContextMenu.x,
+            top: edgeContextMenu.y,
+            background: '#1F2937',
+            border: '1px solid #374151',
+            borderRadius: '8px',
+            padding: '4px 0',
+            zIndex: 1000,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+            minWidth: '140px',
+            fontFamily: 'Inter, system-ui, sans-serif',
+          }}
+          onClick={() => setEdgeContextMenu(null)}
+        >
+          <div
+            style={{
+              padding: '8px 16px',
+              fontSize: '13px',
+              color: '#FCA5A5',
+              cursor: 'pointer',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#374151')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            onClick={async () => {
+              await apiDeleteLink(edgeContextMenu.edgeId);
+              setEdgeContextMenu(null);
+            }}
+          >
+            Delete Link
+          </div>
+        </div>
+      )}
+
+      {/* Link creation dialog */}
+      {linkDialog && (
+        <LinkDialog
+          fromDevice={linkDialog.from}
+          toDevice={linkDialog.to}
+          onCancel={() => setLinkDialog(null)}
+          onConfirm={async (data) => {
+            const from = `${linkDialog.from}:${data.fromIf}`;
+            const to = `${linkDialog.to}:${data.toIf}`;
+            await apiCreateLink(from, to, data.speed, data.type);
+            setLinkDialog(null);
           }}
         />
       )}

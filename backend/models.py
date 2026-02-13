@@ -126,6 +126,7 @@ class DiscoveredLink(BaseModel):
     speed: int = 1000
     type: LinkType = LinkType.WIRED
     discovered: bool = True
+    confirmed: bool = False  # True when both sides see each other
     first_seen: datetime
     last_seen: datetime
 

@@ -102,6 +102,66 @@ def _make_link_id(a_dev: str, a_if: str, b_dev: str, b_if: str) -> str:
     return f"{left}-{right}"
 
 
+def _parse_speed(speed_str: str) -> int:
+    """Parse MikroTik speed string to Mbps integer.
+
+    Examples: "1Gbps"→1000, "10Gbps"→10000, "100Mbps"→100, "2.5Gbps"→2500.
+    """
+    if not speed_str:
+        return 0
+    s = speed_str.strip().upper()
+    m = re.match(r"([\d.]+)\s*(G|M|K)?BPS", s)
+    if not m:
+        return 0
+    val = float(m.group(1))
+    unit = m.group(2) or "M"
+    if unit == "G":
+        return int(val * 1000)
+    if unit == "K":
+        return max(1, int(val / 1000))
+    return int(val)
+
+
+def _parse_advertise_speed(advertise: str) -> int:
+    """Extract max speed from the ethernet advertise field.
+
+    Example: '10M-baseT-full,100M-baseT-full,1G-baseT-full' → 1000.
+    """
+    if not advertise:
+        return 0
+    max_speed = 0
+    for part in advertise.split(","):
+        p = part.strip().upper()
+        if "10G" in p or "10000M" in p:
+            max_speed = max(max_speed, 10000)
+        elif "5G" in p or "5000M" in p:
+            max_speed = max(max_speed, 5000)
+        elif "2.5G" in p or "2500M" in p:
+            max_speed = max(max_speed, 2500)
+        elif p.startswith("1G") or "1000M" in p:
+            max_speed = max(max_speed, 1000)
+        elif "100M" in p:
+            max_speed = max(max_speed, 100)
+        elif "10M" in p:
+            max_speed = max(max_speed, 10)
+    return max_speed
+
+
+def _infer_interface_speed(if_name: str) -> int:
+    """Infer speed from interface name when no data is available.
+
+    SFP+ interfaces are typically 10G, SFP are 1G, etc.
+    """
+    lower = if_name.lower()
+    if "sfp-sfpplus" in lower or "sfpplus" in lower or "xg" in lower:
+        return 10000
+    if "sfp" in lower:
+        return 1000
+    if "combo" in lower:
+        return 1000
+    return 0
+
+
 class TopologyDiscovery:
     """Discovers network topology by querying /ip/neighbor on MikroTik devices.
 
@@ -116,6 +176,7 @@ class TopologyDiscovery:
         auto_add_links: bool = True,
         on_update: Callable[..., Any] | None = None,
         visibility_manager: Any | None = None,
+        api_defaults: dict[str, Any] | None = None,
     ) -> None:
         # Only query devices that have API credentials (password or SSH key).
         self.devices = [d for d in devices if d.password or d.ssh_key_file]
@@ -124,10 +185,17 @@ class TopologyDiscovery:
         self.auto_add_links = auto_add_links
         self.on_update = on_update
         self._visibility = visibility_manager
+        self._api_defaults = api_defaults or {}
+
+        # Track which device names/hosts we already query (to avoid duplicates).
+        self._queryable_names: set[str] = {d.name for d in self.devices}
 
         # All configured device names (for determining which neighbors are "new").
         self._configured_names: set[str] = {d.name for d in devices}
         self._configured_hosts: set[str] = {d.host for d in devices}
+
+        # Per-device interface speed map: {device_name: {interface_name: speed_mbps}}.
+        self.interface_speeds: dict[str, dict[str, int]] = {}
 
         # Discovered state.
         self.discovered_devices: dict[str, DiscoveredDevice] = {}
@@ -148,6 +216,34 @@ class TopologyDiscovery:
             self._infer_hierarchy_from_persisted()
             self._recalculate_tree_positions()
             self._save_persistence()
+            # Add persisted discovered devices as queryable (for immediate first sweep).
+            for dd in self.discovered_devices.values():
+                self.add_queryable_device(dd.name, dd.host)
+
+    def _make_device_config(self, name: str, host: str) -> DeviceConfig:
+        """Build a DeviceConfig for a discovered device using api_defaults."""
+        return DeviceConfig(
+            name=name,
+            host=host,
+            username=self._api_defaults.get("username", "admin"),
+            password=self._api_defaults.get("password", ""),
+            api_type=self._api_defaults.get("api_type", "rest"),
+            port=self._api_defaults.get("port"),
+        )
+
+    def add_queryable_device(self, name: str, host: str) -> None:
+        """Add a discovered device to the queryable list using api_defaults.
+
+        Only adds if api_defaults has a password and the device isn't already tracked.
+        """
+        if not self._api_defaults.get("password"):
+            return
+        if name in self._queryable_names:
+            return
+        dev = self._make_device_config(name, host)
+        self.devices.append(dev)
+        self._queryable_names.add(name)
+        logger.info("Added queryable device: %s (%s)", name, host)
 
     def _load_persistence(self) -> None:
         """Load previously discovered topology from JSON file."""
@@ -221,8 +317,11 @@ class TopologyDiscovery:
 
     async def _query_device(
         self, device: DeviceConfig
-    ) -> list[dict[str, Any]]:
-        """Query /ip/neighbor on a single device. Returns raw neighbor list."""
+    ) -> dict[str, Any]:
+        """Query /ip/neighbor and /interface/ethernet on a single device.
+
+        Returns {"neighbors": [...], "interfaces": [...]}.
+        """
         client = create_client(
             host=device.host,
             username=device.username,
@@ -234,11 +333,39 @@ class TopologyDiscovery:
         )
         try:
             neighbors = await client.get_neighbors()
+
+            # Query ethernet interfaces for speed data (best-effort).
+            eth_interfaces: list[dict[str, Any]] = []
+            try:
+                eth_interfaces = await client.get_ethernet_interfaces()
+            except Exception:
+                logger.debug(
+                    "Ethernet interface query failed for %s (non-critical)",
+                    device.name,
+                )
+
+            # Also query general /interface for SFP types (best-effort).
+            all_interfaces: list[dict[str, Any]] = []
+            try:
+                all_interfaces = await client.get_interfaces()
+            except Exception:
+                pass
+
+            # Merge SFP interfaces into eth_interfaces for speed inference.
+            eth_names = {i.get("name", "") for i in eth_interfaces}
+            for iface in all_interfaces:
+                if_name = iface.get("name", "")
+                if_type = iface.get("type", "")
+                # Add SFP/SFP+ interfaces not already in ethernet list.
+                if if_name and if_name not in eth_names and "sfp" in if_type.lower():
+                    eth_interfaces.append({"name": if_name, "type": if_type})
+
             logger.info(
-                "Device %s (%s via %s) returned %d neighbors",
-                device.name, device.host, device.api_type, len(neighbors),
+                "Device %s (%s via %s) returned %d neighbors, %d interfaces",
+                device.name, device.host, device.api_type,
+                len(neighbors), len(eth_interfaces),
             )
-            return [
+            half_links = [
                 {
                     "local_device": device.name,
                     "local_interface": n.get("interface-name") or n.get("interface", ""),
@@ -251,12 +378,13 @@ class TopologyDiscovery:
                 for n in neighbors
                 if n.get("identity") or n.get("address")
             ]
+            return {"device_name": device.name, "neighbors": half_links, "interfaces": eth_interfaces}
         except Exception:
             logger.warning(
                 "Discovery failed for %s (%s via %s)",
                 device.name, device.host, device.api_type, exc_info=True,
             )
-            return []
+            return {"device_name": device.name, "neighbors": [], "interfaces": []}
         finally:
             await client.close()
 
@@ -411,14 +539,33 @@ class TopologyDiscovery:
         """
         now = datetime.now(timezone.utc)
 
-        # Collect all half-links from neighbor tables.
+        # Collect all half-links and interface data from neighbor tables.
         tasks = [self._query_device(dev) for dev in self.devices]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_half_links: list[dict[str, Any]] = []
         for r in results:
-            if isinstance(r, list):
-                all_half_links.extend(r)
+            if isinstance(r, dict):
+                all_half_links.extend(r.get("neighbors", []))
+                # Build interface speed map from ethernet interface data.
+                dev_name = r.get("device_name", "")
+                iface_list = r.get("interfaces", [])
+                if dev_name and iface_list:
+                    for iface in iface_list:
+                        if_name = iface.get("name") or iface.get("default-name", "")
+                        if not if_name:
+                            continue
+                        # Try explicit speed field first (REST API returns this).
+                        speed_str = iface.get("speed", "") or iface.get("rate", "")
+                        speed_mbps = _parse_speed(speed_str)
+                        # Fallback: parse max advertised speed (Classic API).
+                        if speed_mbps == 0:
+                            speed_mbps = _parse_advertise_speed(iface.get("advertise", ""))
+                        # Fallback: infer from interface name.
+                        if speed_mbps == 0:
+                            speed_mbps = _infer_interface_speed(if_name)
+                        if speed_mbps > 0:
+                            self.interface_speeds.setdefault(dev_name, {})[if_name] = speed_mbps
             elif isinstance(r, Exception):
                 logger.warning("Discovery sweep exception: %s", r)
 
@@ -487,12 +634,18 @@ class TopologyDiscovery:
             existing = self.discovered_links.get(link_id)
             first_seen = existing.first_seen if existing else now
 
+            # Look up real interface speed from speed map.
+            local_speed = self.interface_speeds.get(local_dev, {}).get(local_if, 0)
+            remote_speed = self.interface_speeds.get(remote_id, {}).get(remote_if, 0) if remote_if != "auto" else 0
+            link_speed = local_speed or remote_speed or 1000
+
             new_links[link_id] = DiscoveredLink(
                 id=link_id,
                 from_device=f"{local_dev}:{local_if}",
                 to_device=f"{remote_id}:{remote_if}",
-                speed=1000,
+                speed=link_speed,
                 type=link_type,
+                confirmed=reverse_hl is not None,
                 first_seen=first_seen,
                 last_seen=now,
             )
@@ -538,6 +691,8 @@ class TopologyDiscovery:
                 self._device_positions[name] = position
                 self._configured_names.add(name)
                 added_devices.append(dev)
+                # Auto-add as queryable for next sweep if api_defaults has credentials.
+                self.add_queryable_device(name, hl["remote_address"])
         else:
             # Even if not auto-adding, update last_seen on known discovered devices.
             for name in new_device_candidates:
@@ -564,12 +719,15 @@ class TopologyDiscovery:
         removed_links = list(removed_link_ids)
 
         logger.info(
-            "Discovery sweep: %d half-links, %d full links (%d new, %d removed), %d new devices",
+            "Discovery sweep: %d half-links, %d full links (%d new, %d removed), "
+            "%d new devices, %d queryable devices, %d devices with speed data",
             len(all_half_links),
             len(new_links),
             len(added_links),
             len(removed_links),
             len(added_devices),
+            len(self.devices),
+            len(self.interface_speeds),
         )
 
         # Recalculate tree layout if hierarchy changed or new devices were added.

@@ -149,6 +149,10 @@ class MikroTikSSHClient:
         """Query /interface for all interface stats."""
         return await self.get("interface")
 
+    async def get_ethernet_interfaces(self) -> list[dict[str, Any]]:
+        """Query /interface/ethernet for physical port speeds."""
+        return await self.get("interface/ethernet")
+
     async def get_system_resource(self) -> dict[str, Any]:
         """Query /system/resource for CPU, memory, uptime."""
         result = await self.get("system/resource")
