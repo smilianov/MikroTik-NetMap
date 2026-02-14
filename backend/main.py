@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +22,7 @@ from api.websocket import ConnectionManager
 from config import NetMapConfig
 from manual_link_manager import ManualLinkManager
 from models import DeviceConfig, DeviceType, PingState
+from pydantic import BaseModel as _BaseModel
 from monitors.ping_monitor import PingMonitor
 from monitors.topology_discovery import TopologyDiscovery, _infer_device_type
 from monitors.traffic_monitor import TrafficMonitor
@@ -72,11 +73,138 @@ async def _save_custom_positions(positions: dict[str, dict[str, float]]) -> None
         logger.warning("Failed to save custom positions", exc_info=True)
 
 
+# Device-to-map overrides (persisted across restarts).
+DEVICE_MAPS_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "device_maps.json"
+)
+
+
+def _load_device_maps() -> dict[str, str]:
+    """Load device-to-map overrides from JSON file."""
+    if not DEVICE_MAPS_FILE.exists():
+        return {}
+    try:
+        with open(DEVICE_MAPS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load device maps", exc_info=True)
+        return {}
+
+
+async def _save_device_maps(maps: dict[str, str]) -> None:
+    """Save device-to-map overrides to JSON file."""
+    def _write() -> None:
+        DEVICE_MAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(DEVICE_MAPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(maps, f, indent=2)
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.warning("Failed to save device maps", exc_info=True)
+
+
+# Map label overrides (persisted across restarts).
+MAP_LABELS_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "map_labels.json"
+)
+
+
+def _load_map_labels() -> dict[str, str]:
+    """Load map label overrides from JSON file."""
+    if not MAP_LABELS_FILE.exists():
+        return {}
+    try:
+        with open(MAP_LABELS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load map labels", exc_info=True)
+        return {}
+
+
+async def _save_map_labels(labels: dict[str, str]) -> None:
+    """Save map label overrides to JSON file."""
+    def _write() -> None:
+        MAP_LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(MAP_LABELS_FILE, "w", encoding="utf-8") as f:
+            json.dump(labels, f, indent=2)
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.warning("Failed to save map labels", exc_info=True)
+
+
+# Custom maps (created from UI, persisted across restarts).
+CUSTOM_MAPS_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "custom_maps.json"
+)
+
+
+def _load_custom_maps() -> list[dict[str, str]]:
+    """Load custom maps from JSON file."""
+    if not CUSTOM_MAPS_FILE.exists():
+        return []
+    try:
+        with open(CUSTOM_MAPS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load custom maps", exc_info=True)
+        return []
+
+
+async def _save_custom_maps(maps: list[dict[str, str]]) -> None:
+    """Save custom maps to JSON file."""
+    def _write() -> None:
+        CUSTOM_MAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CUSTOM_MAPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(maps, f, indent=2)
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.warning("Failed to save custom maps", exc_info=True)
+
+
+def _get_maps_list() -> list[dict[str, Any]]:
+    """Build the maps list: config maps + custom maps, with label overrides."""
+    cfg = app_state.get("config")
+    if not cfg:
+        return []
+    map_labels = app_state.get("map_labels", {})
+    result = [
+        {
+            "name": m.name,
+            "label": map_labels.get(m.name, m.label),
+            "parent": m.parent,
+            "background": m.background,
+        }
+        for m in cfg.maps
+    ]
+    # Append custom maps (user-created from UI).
+    for cm in app_state.get("custom_maps", []):
+        name = cm["name"]
+        result.append({
+            "name": name,
+            "label": map_labels.get(name, cm.get("label", name)),
+            "parent": None,
+            "background": None,
+        })
+    return result
+
+
+def _get_all_map_names() -> set[str]:
+    """Get all valid map names (config + custom)."""
+    cfg = app_state.get("config")
+    names = {m.name for m in cfg.maps} if cfg else set()
+    for cm in app_state.get("custom_maps", []):
+        names.add(cm["name"])
+    return names
+
+
 def _build_all_devices_list() -> list[dict[str, Any]]:
     """Build the combined device list (config + discovered) for WebSocket."""
     cfg = app_state.get("config")
     discovery = app_state.get("topology_discovery")
     custom_pos = app_state.get("custom_positions", {})
+    device_maps = app_state.get("device_maps", {})
     visibility = app_state.get("visibility_manager")
     if not cfg:
         return []
@@ -92,7 +220,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
             "host": d.host,
             "type": d.type.value,
             "profile": d.profile,
-            "map": d.map,
+            "map": device_maps.get(d.name, d.map),
             "position": pos,
         })
 
@@ -110,7 +238,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
                 "host": dd.host,
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
-                "map": "main",
+                "map": device_maps.get(dd.name, "main"),
                 "position": pos,
                 "discovered": True,
             })
@@ -228,7 +356,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "host": dd.host,
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
-                "map": "main",
+                "map": app_state.get("device_maps", {}).get(dd.name, "main"),
                 "position": {"x": dd.position.x, "y": dd.position.y},
                 "discovered": True,
             }
@@ -348,6 +476,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if custom_positions:
         logger.info("Loaded custom positions for %d devices", len(custom_positions))
 
+    # Load device-to-map overrides.
+    device_maps = _load_device_maps()
+    app_state["device_maps"] = device_maps
+    if device_maps:
+        logger.info("Loaded map overrides for %d devices", len(device_maps))
+
+    # Load map label overrides.
+    map_labels = _load_map_labels()
+    app_state["map_labels"] = map_labels
+    if map_labels:
+        logger.info("Loaded label overrides for %d maps", len(map_labels))
+
+    # Load custom maps (created from UI).
+    custom_maps = _load_custom_maps()
+    app_state["custom_maps"] = custom_maps
+    if custom_maps:
+        logger.info("Loaded %d custom maps", len(custom_maps))
+
     # Start traffic monitor (if enabled and any device has credentials or api_defaults has password).
     traffic = None
     if cfg.traffic_enabled and (devices_with_creds or has_default_creds):
@@ -355,6 +501,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             devices=cfg.devices,
             interval=cfg.traffic_interval,
             on_update=_on_traffic_update,
+            api_defaults=cfg.api_defaults,
         )
         # Seed with persisted discovered devices that have api_defaults credentials.
         if discovery and discovery.discovered_devices and has_default_creds:
@@ -432,12 +579,136 @@ async def get_config():
             {"max_seconds": t.max_seconds, "color": t.color, "label": t.label}
             for t in cfg.thresholds
         ],
-        "maps": [
-            {"name": m.name, "label": m.label, "parent": m.parent, "background": m.background}
-            for m in cfg.maps
-        ],
+        "maps": _get_maps_list(),
         "links": _build_all_links_list(),
     }
+
+
+class _SetMapBody(_BaseModel):
+    map: str
+
+
+@app.put("/api/devices/{device_id}/map")
+async def set_device_map(device_id: str, body: _SetMapBody):
+    """Change a device's map assignment."""
+    cfg = app_state.get("config")
+    if not cfg:
+        raise HTTPException(status_code=500, detail="Config not loaded")
+
+    valid_maps = _get_all_map_names()
+    if body.map not in valid_maps:
+        raise HTTPException(status_code=400, detail=f"Unknown map: {body.map}")
+
+    device_maps = app_state.get("device_maps", {})
+    device_maps[device_id] = body.map
+    app_state["device_maps"] = device_maps
+    await _save_device_maps(device_maps)
+
+    await ws_manager.broadcast({
+        "type": "device_map_change",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "device_id": device_id,
+        "map": body.map,
+    })
+
+    return {"ok": True, "device_id": device_id, "map": body.map}
+
+
+class _RenameMapBody(_BaseModel):
+    label: str
+
+
+@app.put("/api/maps/{map_name}/label")
+async def rename_map(map_name: str, body: _RenameMapBody):
+    """Rename a map's display label."""
+    cfg = app_state.get("config")
+    if not cfg:
+        raise HTTPException(status_code=500, detail="Config not loaded")
+
+    valid_maps = _get_all_map_names()
+    if map_name not in valid_maps:
+        raise HTTPException(status_code=400, detail=f"Unknown map: {map_name}")
+
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
+
+    map_labels = app_state.get("map_labels", {})
+    map_labels[map_name] = label
+    app_state["map_labels"] = map_labels
+    await _save_map_labels(map_labels)
+
+    await ws_manager.broadcast({
+        "type": "map_label_change",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "map_name": map_name,
+        "label": label,
+    })
+
+    return {"ok": True, "map_name": map_name, "label": label}
+
+
+class _CreateMapBody(_BaseModel):
+    name: str
+    label: str = ""
+
+
+@app.post("/api/maps")
+async def create_map(body: _CreateMapBody):
+    """Create a new map."""
+    name = body.name.strip().lower().replace(" ", "-")
+    if not name:
+        raise HTTPException(status_code=400, detail="Map name cannot be empty")
+
+    existing = _get_all_map_names()
+    if name in existing:
+        raise HTTPException(status_code=400, detail=f"Map already exists: {name}")
+
+    label = body.label.strip() or name
+    custom_maps = app_state.get("custom_maps", [])
+    custom_maps.append({"name": name, "label": label})
+    app_state["custom_maps"] = custom_maps
+    await _save_custom_maps(custom_maps)
+
+    await ws_manager.broadcast({
+        "type": "maps_changed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "maps": _get_maps_list(),
+    })
+
+    return {"ok": True, "name": name, "label": label}
+
+
+@app.delete("/api/maps/{map_name}")
+async def delete_map(map_name: str):
+    """Delete a custom map (moves devices back to main)."""
+    custom_maps = app_state.get("custom_maps", [])
+    names = {cm["name"] for cm in custom_maps}
+    if map_name not in names:
+        raise HTTPException(status_code=400, detail="Can only delete custom maps")
+
+    custom_maps = [cm for cm in custom_maps if cm["name"] != map_name]
+    app_state["custom_maps"] = custom_maps
+    await _save_custom_maps(custom_maps)
+
+    # Move any devices on this map back to main.
+    device_maps = app_state.get("device_maps", {})
+    moved = []
+    for dev_id, m in list(device_maps.items()):
+        if m == map_name:
+            device_maps[dev_id] = "main"
+            moved.append(dev_id)
+    if moved:
+        app_state["device_maps"] = device_maps
+        await _save_device_maps(device_maps)
+
+    await ws_manager.broadcast({
+        "type": "maps_changed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "maps": _get_maps_list(),
+    })
+
+    return {"ok": True, "deleted": map_name, "devices_moved_to_main": moved}
 
 
 @app.get("/api/health")
@@ -492,6 +763,7 @@ async def websocket_endpoint(ws: WebSocket):
                 {"max_seconds": t.max_seconds, "color": t.color, "label": t.label}
                 for t in cfg.thresholds
             ],
+            "maps": _get_maps_list(),
             "devices": _build_all_devices_list(),
             "links": _build_all_links_list(),
             "hidden": visibility.get_hidden_list() if visibility else [],

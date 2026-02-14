@@ -12,11 +12,12 @@ interface ContextMenuProps {
   deviceId: string;
   onClose: () => void;
   onBlacklist: (deviceId: string) => void;
+  onMoveToMap?: (deviceId: string, mapName: string) => void;
 }
 
-export function ContextMenu({ x, y, deviceId, onClose, onBlacklist }: ContextMenuProps) {
+export function ContextMenu({ x, y, deviceId, onClose, onBlacklist, onMoveToMap }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const { hiddenDevices } = useNetworkStore();
+  const { hiddenDevices, maps, currentMap } = useNetworkStore();
   const isHidden = hiddenDevices.has(deviceId);
 
   // Close on click outside or Escape.
@@ -89,6 +90,28 @@ export function ContextMenu({ x, y, deviceId, onClose, onBlacklist }: ContextMen
         <span>{isHidden ? '\u{1F441}' : '\u{1F648}'}</span>
         <span>{isHidden ? 'Unhide Device' : 'Hide Device'}</span>
       </div>
+      {maps.length > 1 && onMoveToMap && (
+        <>
+          <div style={{ height: '1px', background: '#374151', margin: '4px 0' }} />
+          <div style={{ padding: '6px 16px', fontSize: '11px', color: '#6B7280', fontWeight: 600 }}>
+            Move to map
+          </div>
+          {maps
+            .filter((m) => m.name !== currentMap)
+            .map((m) => (
+              <div
+                key={m.name}
+                style={itemStyle}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#283040')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => onMoveToMap(deviceId, m.name)}
+              >
+                <span>{'\u{27A1}'}</span>
+                <span>{m.label || m.name}</span>
+              </div>
+            ))}
+        </>
+      )}
       <div style={{ height: '1px', background: '#374151', margin: '4px 0' }} />
       <div
         style={{ ...itemStyle, color: '#EF4444' }}

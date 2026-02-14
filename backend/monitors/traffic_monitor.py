@@ -41,9 +41,27 @@ class TrafficMonitor:
         devices: list[DeviceConfig],
         interval: int = 10,
         on_update: Callable[..., Any] | None = None,
+        api_defaults: dict[str, Any] | None = None,
     ) -> None:
-        # Only query devices that have API credentials (password or SSH key).
-        self.devices = [d for d in devices if d.password or d.ssh_key_file]
+        # Query devices that have API credentials (password or SSH key),
+        # or all devices when api_defaults provides a password.
+        _defaults = api_defaults or {}
+        has_default_password = bool(_defaults.get("password"))
+        eligible = [
+            d for d in devices
+            if d.password or d.ssh_key_file or has_default_password
+        ]
+        # Apply api_defaults to devices that lack explicit credentials.
+        self.devices = []
+        for d in eligible:
+            if not d.password and not d.ssh_key_file and has_default_password:
+                d = d.model_copy(update={
+                    "username": _defaults.get("username", d.username),
+                    "password": _defaults["password"],
+                    "api_type": _defaults.get("api_type", d.api_type),
+                    "port": _defaults.get("port") or d.port,
+                })
+            self.devices.append(d)
         self.interval = interval
         self.on_update = on_update
 

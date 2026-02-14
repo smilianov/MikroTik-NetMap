@@ -36,3 +36,31 @@ export async function getBlacklisted(): Promise<BlacklistedEntry[]> {
   const res = await fetch(`${API_BASE}/blacklisted`);
   return res.json();
 }
+
+export async function moveDeviceToMap(deviceId: string, mapName: string): Promise<void> {
+  await fetch(`${API_BASE}/${encodeURIComponent(deviceId)}/map`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ map: mapName }),
+  });
+}
+
+export async function renameMap(mapName: string, label: string): Promise<void> {
+  await fetch(`/api/maps/${encodeURIComponent(mapName)}/label`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function createMap(name: string, label: string): Promise<void> {
+  await fetch('/api/maps', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, label }),
+  });
+}
+
+export async function deleteMap(mapName: string): Promise<void> {
+  await fetch(`/api/maps/${encodeURIComponent(mapName)}`, { method: 'DELETE' });
+}

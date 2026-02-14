@@ -15,7 +15,7 @@ import { formatBandwidth } from '../utils/formatters';
 import { ContextMenu } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { LinkDialog } from './LinkDialog';
-import { blacklistDevice as apiBlacklist } from '../api/visibility';
+import { blacklistDevice as apiBlacklist, moveDeviceToMap, renameMap, createMap } from '../api/visibility';
 import { createLink as apiCreateLink, deleteLink as apiDeleteLink } from '../api/links';
 
 /** Link dash pattern per link type. */
@@ -62,11 +62,16 @@ export function NetworkMap() {
   const lastNodeImagesRef = useRef<Map<string, string>>(new Map());
   const lastEdgeColorsRef = useRef<Map<string, string>>(new Map());
 
-  // Refs for data accessed inside afterDrawing callback (registered once).
+  // Refs for data accessed inside animation loop (avoids callback recreation).
   const linksRef = useRef(useNetworkStore.getState().links);
   const trafficDataRef = useRef(useNetworkStore.getState().trafficData);
+  const devicesRef = useRef(useNetworkStore.getState().devices);
+  const pingDataRef = useRef(useNetworkStore.getState().pingData);
+  const thresholdsRef = useRef(useNetworkStore.getState().thresholds);
+  const hiddenDevicesRef = useRef(useNetworkStore.getState().hiddenDevices);
+  const currentMapRef = useRef(useNetworkStore.getState().currentMap);
 
-  const { devices, links, pingData, trafficData, thresholds, hiddenDevices, selectDevice, sidebarVisible, toggleSidebar, wsConnected } =
+  const { devices, links, pingData, trafficData, thresholds, hiddenDevices, selectDevice, sidebarVisible, toggleSidebar, wsConnected, currentMap, maps, setCurrentMap } =
     useNetworkStore();
 
   // Context menu state.
@@ -81,14 +86,18 @@ export function NetworkMap() {
   const linkFirstDeviceRef = useRef<string | null>(null);
   // Edge context menu state (for right-click on edges).
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ x: number; y: number; edgeId: string; isManual: boolean } | null>(null);
+  // Map tab editing state.
+  const [editingMap, setEditingMap] = useState<string | null>(null);
+  const [editingLabel, setEditingLabel] = useState('');
 
-  // Keep refs in sync.
-  useEffect(() => {
-    linksRef.current = links;
-  }, [links]);
-  useEffect(() => {
-    trafficDataRef.current = trafficData;
-  }, [trafficData]);
+  // Keep refs in sync with store state.
+  useEffect(() => { linksRef.current = links; }, [links]);
+  useEffect(() => { trafficDataRef.current = trafficData; }, [trafficData]);
+  useEffect(() => { devicesRef.current = devices; }, [devices]);
+  useEffect(() => { pingDataRef.current = pingData; }, [pingData]);
+  useEffect(() => { thresholdsRef.current = thresholds; }, [thresholds]);
+  useEffect(() => { hiddenDevicesRef.current = hiddenDevices; }, [hiddenDevices]);
+  useEffect(() => { currentMapRef.current = currentMap; }, [currentMap]);
   useEffect(() => {
     linkModeRef.current = linkMode;
     linkFirstDeviceRef.current = linkFirstDevice;
@@ -108,6 +117,14 @@ export function NetworkMap() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [linkMode]);
+
+  // Fit viewport when switching maps.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      networkRef.current?.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [currentMap]);
 
   // Pre-warm image cache with all threshold colors.
   useEffect(() => {
@@ -336,7 +353,7 @@ export function NetworkMap() {
   useEffect(() => {
     const nodes = nodesRef.current;
     const existingIds = new Set(nodes.getIds());
-    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id));
+    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id) && d.map === currentMap);
     const configIds = new Set(visibleDevices.map((d) => d.id));
 
     for (const dev of visibleDevices) {
@@ -368,7 +385,7 @@ export function NetworkMap() {
         nodes.remove(id);
       }
     }
-  }, [devices, thresholds, hiddenDevices]); // Don't include pingData — handled by animation loop.
+  }, [devices, thresholds, hiddenDevices, currentMap]); // Don't include pingData — handled by animation loop.
 
   // Sync links → vis edges (incremental, filter hidden device links).
   useEffect(() => {
@@ -376,11 +393,15 @@ export function NetworkMap() {
     const existingIds = new Set(edges.getIds());
     const newIds = new Set<string>();
 
-    // Filter out links where either endpoint is hidden.
+    // Filter out links where either endpoint is hidden or not on the current map.
+    const currentMapDeviceIds = new Set(
+      devices.filter((d) => d.map === currentMap).map((d) => d.id),
+    );
     const visibleLinks = links.filter((l) => {
       const fromDev = l.from.split(':')[0];
       const toDev = l.to.split(':')[0];
-      return !hiddenDevices.has(fromDev) && !hiddenDevices.has(toDev);
+      return !hiddenDevices.has(fromDev) && !hiddenDevices.has(toDev)
+        && currentMapDeviceIds.has(fromDev) && currentMapDeviceIds.has(toDev);
     });
 
     for (const link of visibleLinks) {
@@ -433,7 +454,7 @@ export function NetworkMap() {
         particlesRef.current.delete(id as string);
       }
     }
-  }, [links, hiddenDevices]);
+  }, [links, devices, hiddenDevices, currentMap]);
 
   // Animation loop: update node images + edge colours only when changed,
   // and redraw for particle animation. Self-throttled to ~10fps via timestamp.
@@ -456,15 +477,24 @@ export function NetworkMap() {
       return;
     }
 
+    // Read latest data from refs (not closure) to avoid callback recreation.
+    const curDevices = devicesRef.current;
+    const curPingData = pingDataRef.current;
+    const curThresholds = thresholdsRef.current;
+    const curHidden = hiddenDevicesRef.current;
+    const curMap = currentMapRef.current;
+    const curLinks = linksRef.current;
+    const curTraffic = trafficDataRef.current;
+
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
     let anyChanged = false;
 
     // Update node images from ping data — only when label or image changed.
-    const visDevices = devices.filter((d) => !hiddenDevices.has(d.id));
+    const visDevices = curDevices.filter((d) => !curHidden.has(d.id) && d.map === curMap);
     for (const dev of visDevices) {
-      const ping = pingData[dev.id];
-      const color = getPingColor(ping?.lastSeen ?? null, thresholds);
+      const ping = curPingData[dev.id];
+      const color = getPingColor(ping?.lastSeen ?? null, curThresholds);
       const imageUrl = getDeviceImageUrl(dev.type, color);
       const rtt = ping?.rttMs;
       const lastSeen = ping?.lastSeen;
@@ -498,15 +528,15 @@ export function NetworkMap() {
     }
 
     // Update edge colours from traffic data — only when colour changed.
-    for (const link of links) {
+    for (const link of curLinks) {
       const edgeId = `${link.from}-${link.to}`;
       const fromDev = link.from.split(':')[0];
       const fromIf = link.from.split(':').slice(1).join(':');
       const toDev = link.to.split(':')[0];
       const toIf = link.to.split(':').slice(1).join(':');
 
-      const fromTraffic = trafficData[fromDev]?.[fromIf];
-      const toTraffic = trafficData[toDev]?.[toIf];
+      const fromTraffic = curTraffic[fromDev]?.[fromIf];
+      const toTraffic = curTraffic[toDev]?.[toIf];
       const maxBps = Math.max(
         fromTraffic?.txBps || 0,
         fromTraffic?.rxBps || 0,
@@ -544,14 +574,11 @@ export function NetworkMap() {
     }
 
     animFrameRef.current = requestAnimationFrame(updateNodes);
-  }, [devices, links, pingData, trafficData, thresholds]);
+  }, []); // All data read from refs — no deps needed.
 
-  // Start/restart animation loop when dependencies change.
+  // Start animation loop once on mount, stop on unmount.
   useEffect(() => {
-    cancelAnimationFrame(animFrameRef.current);
-    if (devices.length > 0) {
-      animFrameRef.current = requestAnimationFrame(updateNodes);
-    }
+    animFrameRef.current = requestAnimationFrame(updateNodes);
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [updateNodes]);
 
@@ -599,6 +626,110 @@ export function NetworkMap() {
           borderRadius: '8px',
         }}
       />
+      {/* Map selector tabs */}
+      <div style={{
+          position: 'absolute',
+          top: '12px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          gap: '2px',
+          zIndex: 50,
+          background: '#1F2937',
+          border: '1px solid #374151',
+          borderRadius: '8px',
+          padding: '3px',
+        }}>
+          {maps.map((m) => (
+            editingMap === m.name ? (
+              <input
+                key={m.name}
+                autoFocus
+                value={editingLabel}
+                onChange={(e) => setEditingLabel(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    const trimmed = editingLabel.trim();
+                    if (trimmed && trimmed !== (m.label || m.name)) {
+                      await renameMap(m.name, trimmed);
+                    }
+                    setEditingMap(null);
+                  } else if (e.key === 'Escape') {
+                    setEditingMap(null);
+                  }
+                }}
+                onBlur={async () => {
+                  const trimmed = editingLabel.trim();
+                  if (trimmed && trimmed !== (m.label || m.name)) {
+                    await renameMap(m.name, trimmed);
+                  }
+                  setEditingMap(null);
+                }}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  border: '1px solid #60A5FA',
+                  borderRadius: '6px',
+                  background: '#374151',
+                  color: '#F9FAFB',
+                  fontFamily: 'Inter, system-ui, sans-serif',
+                  outline: 'none',
+                  width: `${Math.max(60, editingLabel.length * 8)}px`,
+                }}
+              />
+            ) : (
+              <button
+                key={m.name}
+                onClick={() => setCurrentMap(m.name)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingMap(m.name);
+                  setEditingLabel(m.label || m.name);
+                }}
+                style={{
+                  padding: '6px 14px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: currentMap === m.name ? '#374151' : 'transparent',
+                  color: currentMap === m.name ? '#F9FAFB' : '#9CA3AF',
+                  fontFamily: 'Inter, system-ui, sans-serif',
+                  transition: 'all 0.15s',
+                }}
+                title="Double-click to rename"
+              >
+                {m.label || m.name}
+              </button>
+            )
+          ))}
+          <button
+            onClick={async () => {
+              const name = prompt('New map name:');
+              if (name?.trim()) {
+                await createMap(name.trim(), name.trim());
+              }
+            }}
+            style={{
+              padding: '6px 10px',
+              fontSize: '14px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              border: 'none',
+              borderRadius: '6px',
+              background: 'transparent',
+              color: '#6B7280',
+              fontFamily: 'Inter, system-ui, sans-serif',
+              transition: 'all 0.15s',
+            }}
+            title="Add new map"
+          >
+            +
+          </button>
+        </div>
+
       {/* Top-left controls: LIVE indicator + sidebar toggle */}
       <div style={{
         position: 'absolute',
@@ -719,6 +850,10 @@ export function NetworkMap() {
           deviceId={contextMenu.deviceId}
           onClose={() => setContextMenu(null)}
           onBlacklist={(id) => setConfirmTarget(id)}
+          onMoveToMap={async (id, mapName) => {
+            await moveDeviceToMap(id, mapName);
+            setContextMenu(null);
+          }}
         />
       )}
 

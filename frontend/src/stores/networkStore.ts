@@ -31,6 +31,13 @@ export interface LinkInfo {
   manual?: boolean;
 }
 
+export interface MapInfo {
+  name: string;
+  label: string;
+  parent: string | null;
+  background: string | null;
+}
+
 export interface InterfaceTraffic {
   rxBps: number;
   txBps: number;
@@ -44,6 +51,7 @@ interface NetworkState {
   devices: DeviceInfo[];
   links: LinkInfo[];
   thresholds: Threshold[];
+  maps: MapInfo[];
 
   // Real-time ping state.
   pingData: Record<string, PingData>;
@@ -62,7 +70,7 @@ interface NetworkState {
   wsConnected: boolean;
 
   // Actions.
-  setConfig: (devices: DeviceInfo[], links: LinkInfo[], thresholds: Threshold[]) => void;
+  setConfig: (devices: DeviceInfo[], links: LinkInfo[], thresholds: Threshold[], maps?: MapInfo[]) => void;
   updatePingState: (devices: PingData[]) => void;
   updateTraffic: (interfaces: TrafficData) => void;
   updateDevicePosition: (deviceId: string, position: { x: number; y: number }) => void;
@@ -77,6 +85,9 @@ interface NetworkState {
   selectDevice: (deviceId: string | null) => void;
   toggleSidebar: () => void;
   setCurrentMap: (mapName: string) => void;
+  updateDeviceMap: (deviceId: string, map: string) => void;
+  updateMapLabel: (mapName: string, label: string) => void;
+  setMaps: (maps: MapInfo[]) => void;
   setWsConnected: (connected: boolean) => void;
 }
 
@@ -84,6 +95,7 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   devices: [],
   links: [],
   thresholds: DEFAULT_THRESHOLDS,
+  maps: [{ name: 'main', label: 'Network Overview', parent: null, background: null }],
   pingData: {},
   trafficData: {},
   hiddenDevices: new Set<string>(),
@@ -93,11 +105,12 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   currentMap: 'main',
   wsConnected: false,
 
-  setConfig: (devices, links, thresholds) =>
+  setConfig: (devices, links, thresholds, maps) =>
     set({
       devices,
       links,
       thresholds: thresholds.length > 0 ? thresholds : DEFAULT_THRESHOLDS,
+      ...(maps && maps.length > 0 ? { maps } : {}),
     }),
 
   updatePingState: (devices) =>
@@ -166,5 +179,18 @@ export const useNetworkStore = create<NetworkState>((set) => ({
   selectDevice: (deviceId) => set({ selectedDevice: deviceId }),
   toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),
   setCurrentMap: (mapName) => set({ currentMap: mapName }),
+  updateDeviceMap: (deviceId, map) =>
+    set((state) => ({
+      devices: state.devices.map((d) =>
+        d.id === deviceId ? { ...d, map } : d,
+      ),
+    })),
+  updateMapLabel: (mapName, label) =>
+    set((state) => ({
+      maps: state.maps.map((m) =>
+        m.name === mapName ? { ...m, label } : m,
+      ),
+    })),
+  setMaps: (maps) => set({ maps }),
   setWsConnected: (connected) => set({ wsConnected: connected }),
 }));

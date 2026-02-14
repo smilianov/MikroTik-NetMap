@@ -5,8 +5,10 @@
 import { useNetworkStore } from '../stores/networkStore';
 
 export function StatusBar() {
-  const { devices, pingData, thresholds, hiddenDevices } = useNetworkStore();
-  const hiddenCount = devices.filter((d) => hiddenDevices.has(d.id)).length;
+  const { devices, pingData, thresholds, hiddenDevices, currentMap, maps } = useNetworkStore();
+  const mapDevices = devices.filter((d) => d.map === currentMap);
+  const hiddenCount = mapDevices.filter((d) => hiddenDevices.has(d.id)).length;
+  const mapLabel = maps.find((m) => m.name === currentMap)?.label || currentMap;
 
   let online = 0;
   let degraded = 0;
@@ -17,7 +19,7 @@ export function StatusBar() {
   const onlineMax = thresholds.length > 0 ? thresholds[0].maxSeconds : 35;
   const offlineMax = thresholds.length > 0 ? thresholds[thresholds.length - 1].maxSeconds : 345;
 
-  for (const dev of devices) {
+  for (const dev of mapDevices) {
     const ping = pingData[dev.id];
     if (!ping?.lastSeen) {
       unknown++;
@@ -64,7 +66,7 @@ export function StatusBar() {
       {/* Right: device count */}
       <div style={{ flex: 1 }} />
       <div style={{ color: '#9CA3AF', fontSize: '13px' }}>
-        {devices.length} devices
+        {mapDevices.length} devices{maps.length > 1 ? ` · ${mapLabel}` : ''}
       </div>
     </div>
   );
