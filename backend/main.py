@@ -14,10 +14,15 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse
 
+from api.auth import router as auth_router, set_app_state as set_auth_state
 from api.devices import router as devices_router, set_app_state
 from api.links import router as links_router, set_app_state as set_links_state
 from api.visibility import router as visibility_router, set_app_state as set_visibility_state
+from auth import SessionManager
 from api.websocket import ConnectionManager
 from config import NetMapConfig
 from manual_link_manager import ManualLinkManager
@@ -396,6 +401,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     cfg = NetMapConfig(CONFIG_PATH)
     app_state["config"] = cfg
 
+    # Auth setup (optional).
+    app_state["auth_enabled"] = cfg.auth_enabled
+    if cfg.auth_enabled:
+        session_mgr = SessionManager(
+            grafana_url=cfg.auth_grafana_url,
+            session_ttl=cfg.auth_session_ttl,
+        )
+        app_state["session_manager"] = session_mgr
+        logger.info(
+            "Auth enabled: Grafana at %s, session TTL %ds",
+            cfg.auth_grafana_url,
+            cfg.auth_session_ttl,
+        )
+    else:
+        logger.info("Auth disabled (auth.enabled=false in config)")
+
     logger.info(
         "Loaded %d devices, %d maps, %d links, %d thresholds",
         len(cfg.devices),
@@ -535,6 +556,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_app_state(app_state)
     set_visibility_state(app_state)
     set_links_state(app_state)
+    set_auth_state(app_state)
 
     logger.info("MikroTik-NetMap started on %s:%d", cfg.host, cfg.port)
     yield
@@ -548,11 +570,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("MikroTik-NetMap stopped")
 
 
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Enforce session auth on all API routes except public ones."""
+
+    PUBLIC_PREFIXES = ("/api/auth/", "/api/health")
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        if not app_state.get("auth_enabled", False):
+            return await call_next(request)
+
+        path = request.url.path
+
+        # Allow public endpoints.
+        if any(path.startswith(p) for p in self.PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # Allow non-API paths (frontend static files).
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # Validate session cookie.
+        session_mgr = app_state.get("session_manager")
+        token = request.cookies.get("netmap_session")
+        session = session_mgr.validate(token) if session_mgr else None
+
+        if not session:
+            return JSONResponse(
+                status_code=401,
+                content={"ok": False, "error": "Not authenticated"},
+            )
+
+        return await call_next(request)
+
+
 app = FastAPI(
     title="MikroTik-NetMap",
     version="0.4.0-beta",
     lifespan=lifespan,
 )
+
+# Auth middleware (must be added before CORS so it runs after CORS in the stack).
+app.add_middleware(AuthMiddleware)
 
 # CORS — allow frontend dev server.
 app.add_middleware(
@@ -562,7 +620,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST API (visibility and links first — fixed paths must match before /{device_id}).
+# REST API (auth first, then visibility/links/devices).
+app.include_router(auth_router)
 app.include_router(visibility_router)
 app.include_router(links_router)
 app.include_router(devices_router)
@@ -728,12 +787,28 @@ async def health():
         "traffic_running": traffic is not None and getattr(traffic, "_running", False),
         "discovered_devices": len(discovery.discovered_devices) if discovery else 0,
         "discovered_links": len(discovery.discovered_links) if discovery else 0,
+        "auth_enabled": app_state.get("auth_enabled", False),
+        "active_sessions": (
+            app_state["session_manager"].active_count
+            if "session_manager" in app_state
+            else 0
+        ),
     }
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """WebSocket endpoint for real-time state updates."""
+    # Auth check: validate session cookie on WS handshake.
+    if app_state.get("auth_enabled", False):
+        session_mgr = app_state.get("session_manager")
+        token = ws.cookies.get("netmap_session")
+        session = session_mgr.validate(token) if session_mgr else None
+        if not session:
+            await ws.accept()
+            await ws.close(code=4401, reason="Not authenticated")
+            return
+
     await ws_manager.connect(ws)
 
     # Send initial full state on connect.

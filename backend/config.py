@@ -120,3 +120,9 @@ class NetMapConfig:
         traffic = data.get("traffic", {})
         self.traffic_enabled: bool = traffic.get("enabled", True)
         self.traffic_interval: int = traffic.get("interval", 10)
+
+        # Auth settings (optional — disabled by default).
+        auth = data.get("auth", {})
+        self.auth_enabled: bool = auth.get("enabled", False)
+        self.auth_grafana_url: str = auth.get("grafana_url", "http://localhost:3000")
+        self.auth_session_ttl: int = auth.get("session_ttl", 28800)  # 8 hours

@@ -2,6 +2,8 @@
  * API helpers for device visibility (hide / blacklist).
  */
 
+import { fetchWithAuth as fetch } from './fetchWithAuth';
+
 const API_BASE = '/api/devices';
 
 export async function hideDevice(deviceId: string): Promise<void> {

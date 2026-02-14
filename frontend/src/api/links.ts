@@ -2,6 +2,8 @@
  * API helpers for manual link management.
  */
 
+import { fetchWithAuth as fetch } from './fetchWithAuth';
+
 const API_BASE = '/api/links';
 
 export interface ManualLink {

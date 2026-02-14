@@ -3,9 +3,11 @@
  */
 
 import { useNetworkStore } from '../stores/networkStore';
+import { useAuthStore } from '../stores/authStore';
 
 export function StatusBar() {
   const { devices, pingData, thresholds, hiddenDevices, currentMap, maps } = useNetworkStore();
+  const { authEnabled, username, logout } = useAuthStore();
   const mapDevices = devices.filter((d) => d.map === currentMap);
   const hiddenCount = mapDevices.filter((d) => hiddenDevices.has(d.id)).length;
   const mapLabel = maps.find((m) => m.name === currentMap)?.label || currentMap;
@@ -63,10 +65,31 @@ export function StatusBar() {
         MikroTik NetMap by LS
       </div>
 
-      {/* Right: device count */}
+      {/* Right: device count + auth */}
       <div style={{ flex: 1 }} />
-      <div style={{ color: '#9CA3AF', fontSize: '13px' }}>
-        {mapDevices.length} devices{maps.length > 1 ? ` · ${mapLabel}` : ''}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#9CA3AF', fontSize: '13px' }}>
+        <span>{mapDevices.length} devices{maps.length > 1 ? ` \u00B7 ${mapLabel}` : ''}</span>
+        {authEnabled && username && (
+          <>
+            <span style={{ color: '#4B5563' }}>|</span>
+            <span style={{ color: '#D1D5DB' }}>{username}</span>
+            <button
+              onClick={logout}
+              style={{
+                background: 'none',
+                border: '1px solid #374151',
+                color: '#9CA3AF',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              Logout
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
