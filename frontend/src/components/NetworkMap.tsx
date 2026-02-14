@@ -15,7 +15,7 @@ import { formatBandwidth } from '../utils/formatters';
 import { ContextMenu } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { LinkDialog } from './LinkDialog';
-import { blacklistDevice as apiBlacklist, moveDeviceToMap, renameMap, createMap } from '../api/visibility';
+import { blacklistDevice as apiBlacklist, moveDeviceToMap, renameMap, createMap, deleteMap } from '../api/visibility';
 import { createLink as apiCreateLink, deleteLink as apiDeleteLink } from '../api/links';
 
 /** Link dash pattern per link type. */
@@ -89,6 +89,8 @@ export function NetworkMap() {
   // Map tab editing state.
   const [editingMap, setEditingMap] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
+  // Map tab context menu state (right-click on tab).
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; mapName: string } | null>(null);
 
   // Keep refs in sync with store state.
   useEffect(() => { linksRef.current = links; }, [links]);
@@ -112,11 +114,20 @@ export function NetworkMap() {
           setLinkFirstDevice(null);
         }
         setEdgeContextMenu(null);
+        setTabMenu(null);
       }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [linkMode]);
+
+  // Close tab menu on click outside.
+  useEffect(() => {
+    if (!tabMenu) return;
+    const handleClick = () => setTabMenu(null);
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [tabMenu]);
 
   // Fit viewport when switching maps.
   useEffect(() => {
@@ -197,6 +208,7 @@ export function NetworkMap() {
     // Single click → deselect or handle link mode.
     network.on('click', (params) => {
       setEdgeContextMenu(null);
+      setTabMenu(null);
       if (linkModeRef.current && params.nodes.length > 0) {
         const nodeId = params.nodes[0] as string;
         if (!linkFirstDeviceRef.current) {
@@ -213,28 +225,33 @@ export function NetworkMap() {
       }
     });
 
-    // Right-click → context menu (nodes or edges).
-    network.on('oncontext', (params) => {
-      params.event.preventDefault();
-      const rect = containerRef.current!.getBoundingClientRect();
-      const x = params.event.clientX ?? (params.pointer.DOM.x + rect.left);
-      const y = params.event.clientY ?? (params.pointer.DOM.y + rect.top);
-
-      if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0] as string;
-        setContextMenu({ x, y, deviceId: nodeId });
+    // Right-click → context menu (native DOM event for reliability).
+    const canvas = containerRef.current!;
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!dragUnlockedRef.current) return;
+      const rect = canvas.getBoundingClientRect();
+      const domX = e.clientX - rect.left;
+      const domY = e.clientY - rect.top;
+      const nodeId = network.getNodeAt({ x: domX, y: domY });
+      if (nodeId) {
+        setContextMenu({ x: e.clientX, y: e.clientY, deviceId: nodeId as string });
         setEdgeContextMenu(null);
-      } else if (params.edges.length > 0) {
-        const edgeId = params.edges[0] as string;
-        // Check if the edge is a manual link.
+        setTabMenu(null);
+        return;
+      }
+      const edgeId = network.getEdgeAt({ x: domX, y: domY });
+      if (edgeId) {
         const curLinks = linksRef.current;
         const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
         if (link?.manual) {
-          setEdgeContextMenu({ x, y, edgeId, isManual: true });
+          setEdgeContextMenu({ x: e.clientX, y: e.clientY, edgeId: edgeId as string, isManual: true });
           setContextMenu(null);
         }
       }
-    });
+    };
+    canvas.addEventListener('contextmenu', handleContextMenu);
 
     // Pause animation loop during drag for smooth performance.
     network.on('dragStart', (params) => {
@@ -338,6 +355,7 @@ export function NetworkMap() {
     networkRef.current = network;
 
     return () => {
+      canvas.removeEventListener('contextmenu', handleContextMenu);
       cancelAnimationFrame(animFrameRef.current);
       network.destroy();
     };
@@ -687,6 +705,11 @@ export function NetworkMap() {
                   setEditingMap(m.name);
                   setEditingLabel(m.label || m.name);
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setTabMenu({ x: e.clientX, y: e.clientY, mapName: m.name });
+                }}
                 style={{
                   padding: '6px 14px',
                   fontSize: '12px',
@@ -699,7 +722,7 @@ export function NetworkMap() {
                   fontFamily: 'Inter, system-ui, sans-serif',
                   transition: 'all 0.15s',
                 }}
-                title="Double-click to rename"
+                title="Double-click to rename · Right-click for options"
               >
                 {m.label || m.name}
               </button>
@@ -907,6 +930,72 @@ export function NetworkMap() {
           </div>
         </div>
       )}
+
+      {/* Map tab context menu (right-click on tab) */}
+      {tabMenu && (() => {
+        const tabMap = maps.find((m) => m.name === tabMenu.mapName);
+        const isMain = tabMenu.mapName === 'main';
+        const tabItemStyle: React.CSSProperties = {
+          padding: '8px 16px',
+          cursor: 'pointer',
+          fontSize: '13px',
+          color: '#E5E7EB',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+        };
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              left: tabMenu.x,
+              top: tabMenu.y,
+              background: '#1F2937',
+              border: '1px solid #374151',
+              borderRadius: '8px',
+              padding: '4px 0',
+              zIndex: 1000,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              minWidth: '150px',
+              fontFamily: 'Inter, system-ui, sans-serif',
+            }}
+          >
+            <div style={{ padding: '6px 16px', fontSize: '11px', color: '#6B7280', fontWeight: 600, borderBottom: '1px solid #374151', marginBottom: '4px' }}>
+              {tabMap?.label || tabMenu.mapName}
+            </div>
+            <div
+              style={tabItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#283040')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                setEditingMap(tabMenu.mapName);
+                setEditingLabel(tabMap?.label || tabMenu.mapName);
+                setTabMenu(null);
+              }}
+            >
+              <span>Rename</span>
+            </div>
+            {!isMain && (
+              <div
+                style={{ ...tabItemStyle, color: '#EF4444' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#283040')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={async () => {
+                  if (confirm(`Delete map "${tabMap?.label || tabMenu.mapName}"? Devices will be moved to Main.`)) {
+                    if (currentMap === tabMenu.mapName) {
+                      setCurrentMap('main');
+                    }
+                    await deleteMap(tabMenu.mapName);
+                  }
+                  setTabMenu(null);
+                }}
+              >
+                <span>Delete</span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Link creation dialog */}
       {linkDialog && (

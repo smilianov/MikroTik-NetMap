@@ -65,6 +65,15 @@ discovery:
   protocols: [mndp, lldp]
   auto_add_devices: false
   auto_add_links: true
+
+traffic:
+  enabled: true
+  interval: 10
+
+auth:
+  enabled: true
+  grafana_url: "http://localhost:3000"
+  session_ttl: 28800
 ```
 
 ---
@@ -242,6 +251,45 @@ Auto-discovery settings. Queries `/ip/neighbor` on devices that have API credent
 | `protocols` | list | `[mndp, lldp]` | Protocols to use |
 | `auto_add_devices` | bool | `false` | Auto-add discovered unknown devices |
 | `auto_add_links` | bool | `true` | Auto-create links from neighbour data |
+
+### `traffic`
+
+Per-interface bandwidth monitoring. Requires API credentials on devices (via `api_defaults` or per-device `password`). Traffic data is visualised as animated particles on links.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable traffic monitoring |
+| `interval` | int | `10` | Seconds between interface stat polls |
+
+### `auth`
+
+Optional Grafana-based authentication. When enabled, users must log in with valid Grafana credentials before accessing the dashboard. Sessions are stored in-memory with HttpOnly cookies.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable authentication |
+| `grafana_url` | string | `http://localhost:3000` | Grafana instance URL for credential validation |
+| `session_ttl` | int | `28800` | Session lifetime in seconds (default: 8 hours) |
+
+**How it works:**
+1. User enters username/password on the login page
+2. Backend calls `GET {grafana_url}/api/user` with Basic Auth
+3. If Grafana returns 200, a session is created with an HttpOnly cookie
+4. All REST API endpoints (except `/api/auth/*` and `/api/health`) require a valid session
+5. WebSocket connections require the session cookie in the upgrade request
+
+**Example:**
+
+```yaml
+auth:
+  enabled: true
+  grafana_url: "http://localhost:3000"
+  session_ttl: 28800
+```
+
+> **Note:** Use `--network host` when running in Docker if Grafana is on the same host, so `localhost:3000` is reachable from within the container.
+
+> **Tip:** A `no-auth` git branch is available for deployments that don't need authentication.
 
 ---
 

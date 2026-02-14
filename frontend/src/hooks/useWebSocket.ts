@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useNetworkStore } from '../stores/networkStore';
+import { useAuthStore } from '../stores/authStore';
 
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 const RECONNECT_DELAY = 3000;
@@ -55,10 +56,15 @@ export function useWebSocket() {
         }
       };
 
-      ws.onclose = () => {
-        console.log('[WS] Disconnected, reconnecting...');
+      ws.onclose = (event) => {
         setWsConnected(false);
         _wsSendFn = null;
+        if (event.code === 4401) {
+          console.log('[WS] Auth rejected (4401), redirecting to login');
+          useAuthStore.getState().logout();
+          return;
+        }
+        console.log('[WS] Disconnected, reconnecting...');
         scheduleReconnect();
       };
 
