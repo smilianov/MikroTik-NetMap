@@ -76,6 +76,19 @@ async def get_me(request: Request, response: Response):
     if not auth_enabled:
         return {"authenticated": True, "auth_enabled": False, "role": "Admin"}
 
+    # Check proxy auth header first (set by nginx auth_request).
+    header_user = request.headers.get("X-Auth-User")
+    if header_user:
+        roles = request.headers.get("X-Auth-Roles", "").split(",")
+        return {
+            "authenticated": True,
+            "auth_enabled": True,
+            "proxy_auth": True,
+            "username": header_user,
+            "roles": roles,
+            "role": "admin" if "admin" in roles else "viewer",
+        }
+
     session_mgr = _app_state.get("session_manager")
     token = request.cookies.get("netmap_session")
     session = session_mgr.validate(token) if session_mgr else None

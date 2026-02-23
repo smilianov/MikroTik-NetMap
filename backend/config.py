@@ -126,3 +126,12 @@ class NetMapConfig:
         self.auth_enabled: bool = auth.get("enabled", False)
         self.auth_grafana_url: str = auth.get("grafana_url", "http://localhost:3000")
         self.auth_session_ttl: int = auth.get("session_ttl", 28800)  # 8 hours
+        self.auth_trust_headers: bool = auth.get("trust_proxy_headers", False)
+        self.auth_header_user: str = auth.get("proxy_header_user", "X-Auth-User")
+        self.auth_header_roles: str = auth.get("proxy_header_roles", "X-Auth-Roles")
+
+        # Env var overrides for portal deployment.
+        if os.environ.get("NETMAP_AUTH_ENABLED", "").lower() in ("true", "1"):
+            self.auth_enabled = True
+        if os.environ.get("NETMAP_AUTH_TRUST_PROXY_HEADERS", "").lower() in ("true", "1"):
+            self.auth_trust_headers = True

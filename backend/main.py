@@ -589,6 +589,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/"):
             return await call_next(request)
 
+        # Check trusted proxy headers first (from nginx auth_request).
+        cfg = app_state.get("config")
+        if cfg and cfg.auth_trust_headers:
+            header_user = request.headers.get(cfg.auth_header_user)
+            if header_user:
+                request.state.auth_user = header_user
+                request.state.auth_roles = request.headers.get(cfg.auth_header_roles, "").split(",")
+                return await call_next(request)
+
         # Validate session cookie.
         session_mgr = app_state.get("session_manager")
         token = request.cookies.get("netmap_session")
@@ -799,15 +808,31 @@ async def health():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """WebSocket endpoint for real-time state updates."""
-    # Auth check: validate session cookie on WS handshake.
+    # Auth check: validate session cookie or proxy headers on WS handshake.
     if app_state.get("auth_enabled", False):
-        session_mgr = app_state.get("session_manager")
-        token = ws.cookies.get("netmap_session")
-        session = session_mgr.validate(token) if session_mgr else None
-        if not session:
-            await ws.accept()
-            await ws.close(code=4401, reason="Not authenticated")
-            return
+        cfg = app_state.get("config")
+        # Check trusted proxy headers first (from nginx auth_request).
+        if cfg and cfg.auth_trust_headers:
+            header_user = ws.headers.get(cfg.auth_header_user)
+            if header_user:
+                pass  # Proxy-authenticated, proceed
+            else:
+                # Fall back to session cookie.
+                session_mgr = app_state.get("session_manager")
+                token = ws.cookies.get("netmap_session")
+                session = session_mgr.validate(token) if session_mgr else None
+                if not session:
+                    await ws.accept()
+                    await ws.close(code=4401, reason="Not authenticated")
+                    return
+        else:
+            session_mgr = app_state.get("session_manager")
+            token = ws.cookies.get("netmap_session")
+            session = session_mgr.validate(token) if session_mgr else None
+            if not session:
+                await ws.accept()
+                await ws.close(code=4401, reason="Not authenticated")
+                return
 
     await ws_manager.connect(ws)
 
