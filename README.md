@@ -1,4 +1,4 @@
-# MTM-MultiView-LS
+# MikroTik-NetMap
 
 **Real-time MikroTik network topology dashboard** — a web-based alternative to [The Dude](https://mikrotik.com/thedude) with graduated ping-status colours, auto-discovery, traffic-flow animation, multi-map tabs, and optional Grafana-based authentication.
 
@@ -72,8 +72,8 @@ For a **complete step-by-step guide** covering SSH key setup, Claude Code integr
 ### 1. Clone & configure
 
 ```bash
-git clone git@github.com:smilianov/MTM-MultiView-LS.git
-cd MTM-MultiView-LS
+git clone git@github.com:smilianov/MikroTik-NetMap.git
+cd MikroTik-NetMap
 
 cp config/netmap.example.yaml config/netmap.yaml
 cp .env.example .env
@@ -139,11 +139,11 @@ npm run build
 # Copy project to server (exclude dev files)
 rsync -avz --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/' \
   --exclude='frontend/dist/' --exclude='.git/' \
-  . user@server:/opt/MTM-MultiView-LS/
+  . user@server:/opt/MikroTik-NetMap/
 
 # SSH into server
 ssh user@server
-cd /opt/MTM-MultiView-LS
+cd /opt/MikroTik-NetMap
 
 # Create production config
 cp config/netmap.example.yaml config/netmap.yaml
@@ -168,14 +168,14 @@ Open **http://server-ip:8585** in your browser.
 # Sync source to server (exclude config to preserve production settings)
 rsync -avz --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/' \
   --exclude='frontend/dist/' --exclude='.git/' --exclude='config/' \
-  . user@server:/opt/MTM-MultiView-LS/
+  . user@server:/opt/MikroTik-NetMap/
 
 # Rebuild image and recreate container
-ssh user@server "cd /opt/MTM-MultiView-LS && \
+ssh user@server "cd /opt/MikroTik-NetMap && \
   docker build -t mikrotik-netmap:latest . && \
   docker stop netmap && docker rm netmap && \
   docker run -d --name netmap --network host \
-    -v /opt/MTM-MultiView-LS/config:/app/config \
+    -v /opt/MikroTik-NetMap/config:/app/config \
     --restart unless-stopped mikrotik-netmap:latest"
 ```
 
@@ -304,7 +304,7 @@ auth:
 ## Project Structure
 
 ```
-MTM-MultiView-LS/
+MikroTik-NetMap/
 ├── backend/
 │   ├── main.py                  # FastAPI app, middleware, WebSocket, routes
 │   ├── config.py                # YAML config loader with ${ENV} expansion

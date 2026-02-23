@@ -1,4 +1,4 @@
-# MikroTik-NetMap (MTM-MultiView-LS)
+# MikroTik-NetMap (MikroTik-NetMap)
 
 ## Project Overview
 Real-time MikroTik network topology dashboard — a web-based alternative to The Dude.
@@ -46,7 +46,7 @@ docker run -d --name netmap --network host -v $(pwd)/config:/app/config mikrotik
 ```
 
 ## Deployment
-- **Server:** 10.0.0.92, SSH user: `claude`, path: `/opt/MTM-MultiView-LS/`
+- **Server:** 10.0.0.92, SSH user: `claude`, path: `/opt/MikroTik-NetMap/`
 - **Container:** `netmap`, `--network host`, config volume-mounted at `/app/config`
 - **Deploy flow:** rsync source (exclude `config/`) → `docker build` → `docker stop/rm/run`
 - **Important:** Only `config/` is volume-mounted. Code changes require rebuilding the Docker image — `docker restart` alone won't pick them up.

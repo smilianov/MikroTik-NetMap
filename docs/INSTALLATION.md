@@ -140,12 +140,12 @@ ssh claude@SERVER_IP
 
 ```bash
 # Using GitHub CLI (recommended)
-gh repo clone smilianov/MTM-MultiView-LS
-cd MTM-MultiView-LS
+gh repo clone smilianov/MikroTik-NetMap
+cd MikroTik-NetMap
 
 # Or using git directly
-git clone git@github.com:smilianov/MTM-MultiView-LS.git
-cd MTM-MultiView-LS
+git clone git@github.com:smilianov/MikroTik-NetMap.git
+cd MikroTik-NetMap
 ```
 
 ### Initial local setup
@@ -167,7 +167,7 @@ cd frontend && npm install && cd ..
 ### Pull latest changes
 
 ```bash
-cd MTM-MultiView-LS
+cd MikroTik-NetMap
 git pull origin main
 ```
 
@@ -190,7 +190,7 @@ claude --version
 ### Open the project in Claude Code
 
 ```bash
-cd MTM-MultiView-LS
+cd MikroTik-NetMap
 claude
 ```
 
@@ -235,7 +235,7 @@ Real-time MikroTik network topology dashboard (FastAPI + React 19 + vis-network)
 
 ```bash
 # Start Claude Code in the project
-cd MTM-MultiView-LS
+cd MikroTik-NetMap
 claude
 
 # Example prompts:
@@ -248,7 +248,7 @@ claude
 ### Using Claude Code from VS Code
 
 1. Install the **Claude Code** extension from the VS Code marketplace
-2. Open the `MTM-MultiView-LS` folder in VS Code
+2. Open the `MikroTik-NetMap` folder in VS Code
 3. Open the Claude Code panel (sidebar or Ctrl+Shift+P → "Claude Code")
 4. Claude has full access to your project files and terminal
 
@@ -314,8 +314,8 @@ sudo ufw status
 ### 5.6 Create the project directory
 
 ```bash
-sudo mkdir -p /opt/MTM-MultiView-LS
-sudo chown $USER:$USER /opt/MTM-MultiView-LS
+sudo mkdir -p /opt/MikroTik-NetMap
+sudo chown $USER:$USER /opt/MikroTik-NetMap
 ```
 
 ---
@@ -328,7 +328,7 @@ Run these commands from your **local machine** (where you cloned the repo).
 
 ```bash
 # From your local project directory
-cd MTM-MultiView-LS
+cd MikroTik-NetMap
 
 rsync -avz \
   --exclude='node_modules/' \
@@ -337,7 +337,7 @@ rsync -avz \
   --exclude='frontend/dist/' \
   --exclude='.git/' \
   --exclude='.DS_Store' \
-  . claude@SERVER_IP:/opt/MTM-MultiView-LS/
+  . claude@SERVER_IP:/opt/MikroTik-NetMap/
 ```
 
 ### 6.2 Create the production config
@@ -345,7 +345,7 @@ rsync -avz \
 ```bash
 ssh claude@SERVER_IP
 
-cd /opt/MTM-MultiView-LS
+cd /opt/MikroTik-NetMap
 
 # Copy the example config
 cp config/netmap.example.yaml config/netmap.yaml
@@ -360,7 +360,7 @@ See [Section 7](#7-configure-the-application) for configuration details.
 
 ```bash
 # On the remote server
-cd /opt/MTM-MultiView-LS
+cd /opt/MikroTik-NetMap
 docker build -t mikrotik-netmap:latest .
 ```
 
@@ -374,7 +374,7 @@ This takes 1-2 minutes. The Dockerfile runs a multi-stage build:
 docker run -d \
   --name netmap \
   --network host \
-  -v /opt/MTM-MultiView-LS/config:/app/config \
+  -v /opt/MikroTik-NetMap/config:/app/config \
   --restart unless-stopped \
   mikrotik-netmap:latest
 ```
@@ -405,7 +405,7 @@ Open in your browser: **http://SERVER_IP:8585**
 
 ## 7. Configure the Application
 
-Edit `/opt/MTM-MultiView-LS/config/netmap.yaml` on the server.
+Edit `/opt/MikroTik-NetMap/config/netmap.yaml` on the server.
 
 ### Minimal production config
 
@@ -535,14 +535,14 @@ rsync -avz \
   --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/' \
   --exclude='frontend/dist/' --exclude='.git/' --exclude='config/' \
   --exclude='.DS_Store' \
-  . claude@SERVER_IP:/opt/MTM-MultiView-LS/
+  . claude@SERVER_IP:/opt/MikroTik-NetMap/
 
 # 2. Rebuild and restart (on server)
-ssh claude@SERVER_IP "cd /opt/MTM-MultiView-LS && \
+ssh claude@SERVER_IP "cd /opt/MikroTik-NetMap && \
   docker build -t mikrotik-netmap:latest . && \
   docker stop netmap && docker rm netmap && \
   docker run -d --name netmap --network host \
-    -v /opt/MTM-MultiView-LS/config:/app/config \
+    -v /opt/MikroTik-NetMap/config:/app/config \
     --restart unless-stopped mikrotik-netmap:latest"
 ```
 
@@ -551,15 +551,15 @@ ssh claude@SERVER_IP "cd /opt/MTM-MultiView-LS && \
 Add this to your `~/.zshrc` or `~/.bashrc` for convenience:
 
 ```bash
-alias netmap-deploy='cd ~/MTM-MultiView-LS && \
+alias netmap-deploy='cd ~/MikroTik-NetMap && \
   rsync -avz --exclude="node_modules/" --exclude=".venv/" --exclude="__pycache__/" \
     --exclude="frontend/dist/" --exclude=".git/" --exclude="config/" --exclude=".DS_Store" \
-    . claude@SERVER_IP:/opt/MTM-MultiView-LS/ && \
-  ssh claude@SERVER_IP "cd /opt/MTM-MultiView-LS && \
+    . claude@SERVER_IP:/opt/MikroTik-NetMap/ && \
+  ssh claude@SERVER_IP "cd /opt/MikroTik-NetMap && \
     docker build -t mikrotik-netmap:latest . && \
     docker stop netmap && docker rm netmap && \
     docker run -d --name netmap --network host \
-      -v /opt/MTM-MultiView-LS/config:/app/config \
+      -v /opt/MikroTik-NetMap/config:/app/config \
       --restart unless-stopped mikrotik-netmap:latest"'
 ```
 
@@ -604,7 +604,7 @@ docker logs netmap
 # Remove old container and try again
 docker rm -f netmap
 docker run -d --name netmap --network host \
-  -v /opt/MTM-MultiView-LS/config:/app/config \
+  -v /opt/MikroTik-NetMap/config:/app/config \
   mikrotik-netmap:latest
 ```
 
@@ -663,18 +663,18 @@ ssh-copy-id claude@10.0.0.92
 ssh claude@10.0.0.92 "curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker claude"
 
 # 7. Clone the project locally (if not already done)
-gh repo clone smilianov/MTM-MultiView-LS
-cd MTM-MultiView-LS
+gh repo clone smilianov/MikroTik-NetMap
+cd MikroTik-NetMap
 
 # 8. Sync to server
 rsync -avz \
   --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/' \
   --exclude='frontend/dist/' --exclude='.git/' --exclude='.DS_Store' \
-  . claude@10.0.0.92:/opt/MTM-MultiView-LS/
+  . claude@10.0.0.92:/opt/MikroTik-NetMap/
 
 # 9. SSH in and configure
 ssh claude@10.0.0.92
-cd /opt/MTM-MultiView-LS
+cd /opt/MikroTik-NetMap
 cp config/netmap.example.yaml config/netmap.yaml
 nano config/netmap.yaml
 # Add your MikroTik devices, enable discovery, set API credentials
@@ -682,7 +682,7 @@ nano config/netmap.yaml
 # 10. Build and run
 docker build -t mikrotik-netmap:latest .
 docker run -d --name netmap --network host \
-  -v /opt/MTM-MultiView-LS/config:/app/config \
+  -v /opt/MikroTik-NetMap/config:/app/config \
   --restart unless-stopped \
   mikrotik-netmap:latest
 

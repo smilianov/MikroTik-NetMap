@@ -2,11 +2,11 @@
 
 ## System Overview
 
-MTM-MultiView-LS is a single-container web application that pings MikroTik devices every 2 seconds, auto-discovers network topology via MNDP/LLDP, and renders an interactive network map in the browser with real-time colour-coded status.
+MikroTik-NetMap is a single-container web application that pings MikroTik devices every 2 seconds, auto-discovers network topology via MNDP/LLDP, and renders an interactive network map in the browser with real-time colour-coded status.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                     MTM-MultiView-LS                          │
+│                     MikroTik-NetMap                          │
 │                                                              │
 │  ┌──────────────────────┐    ┌────────────────────────────┐  │
 │  │   Frontend (React)   │◄──►│   Backend (FastAPI)         │  │
@@ -253,7 +253,7 @@ The async ping design handles 100+ devices in a single sweep (all pings run conc
 
 ```
 ┌─────────────────────┐     ┌──────────────────────┐
-│  MTM-MultiView-LS   │     │  Monitoring-Codex     │
+│  MikroTik-NetMap   │     │  Monitoring-Codex     │
 │  (this project)     │     │  (Grafana stack)      │
 │                     │     │                       │
 │  Live topology map  │────►│  Deep device metrics  │

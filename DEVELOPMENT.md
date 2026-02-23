@@ -16,8 +16,8 @@
 ### 1. Clone the repository
 
 ```bash
-git clone git@github.com:smilianov/MTM-MultiView-LS.git
-cd MTM-MultiView-LS
+git clone git@github.com:smilianov/MikroTik-NetMap.git
+cd MikroTik-NetMap
 ```
 
 ### 2. Backend setup
