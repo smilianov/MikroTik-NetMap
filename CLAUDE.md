@@ -68,5 +68,5 @@ docker run -d --name netmap --network host -v $(pwd)/config:/app/config mikrotik
 - `no-auth` — snapshot before auth was added (commit 3a0e8da)
 
 ## Related Projects
-- **Monitoring-Codex** (`/Users/gun/Documents/Coding Projects/Monitoring-Codex`) — Grafana + Prometheus stack
-- **MikroTik-Telemetry** (`/Users/gun/MikroTik-Telemetry`) — Python telemetry collector
+- **Monitoring-Codex** (`/Users/gun/Documents/Projects/Coding Projects/Claude_ai/Monitoring-Codex`) — Grafana + Prometheus stack
+- **MikroTik-Telemetry** (`/Users/gun/Documents/Projects/Coding Projects/Claude_ai/MikroTik-Telemetry`) — Python telemetry collector

@@ -112,6 +112,25 @@ Open **http://localhost:5173** — the Vite dev server proxies `/api` and `/ws` 
 
 ---
 
+
+## Testing
+
+Backend smoke tests:
+
+```bash
+cd backend
+pip install -r requirements.txt pytest
+PYTHONDONTWRITEBYTECODE=1 pytest -q tests -o cache_dir=/tmp/pytest-netmap
+```
+
+Frontend build validation:
+
+```bash
+cd frontend
+npm ci
+npm run build
+```
+
 ## Deploy to a Server
 
 ### Build and run
