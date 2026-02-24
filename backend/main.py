@@ -595,7 +595,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             header_user = request.headers.get(cfg.auth_header_user)
             if header_user:
                 request.state.auth_user = header_user
-                request.state.auth_roles = request.headers.get(cfg.auth_header_roles, "").split(",")
+                request.state.auth_roles = [
+                    r.strip() for r in
+                    request.headers.get(cfg.auth_header_roles, "").split(",")
+                    if r.strip()
+                ]
                 return await call_next(request)
 
         # Validate session cookie.
@@ -621,10 +625,13 @@ app = FastAPI(
 # Auth middleware (must be added before CORS so it runs after CORS in the stack).
 app.add_middleware(AuthMiddleware)
 
-# CORS — allow frontend dev server.
+# CORS — configurable via NETMAP_CORS_ORIGINS env var (comma-separated).
+# Default "*" is safe for portal deployments where nginx gates all access.
+_cors_origins_env = os.environ.get("NETMAP_CORS_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -76,18 +76,28 @@ async def get_me(request: Request, response: Response):
     if not auth_enabled:
         return {"authenticated": True, "auth_enabled": False, "role": "Admin"}
 
-    # Check proxy auth header first (set by nginx auth_request).
-    header_user = request.headers.get("X-Auth-User")
-    if header_user:
-        roles = request.headers.get("X-Auth-Roles", "").split(",")
-        return {
-            "authenticated": True,
-            "auth_enabled": True,
-            "proxy_auth": True,
-            "username": header_user,
-            "roles": roles,
-            "role": "admin" if "admin" in roles else "viewer",
-        }
+    # Check proxy auth header (set by nginx auth_request) — only when trust is configured.
+    cfg = _app_state.get("config")
+    if cfg and getattr(cfg, "auth_trust_headers", False):
+        header_user = request.headers.get(
+            getattr(cfg, "auth_header_user", "X-Auth-User")
+        )
+        if header_user:
+            roles = [
+                r.strip() for r in
+                request.headers.get(
+                    getattr(cfg, "auth_header_roles", "X-Auth-Roles"), ""
+                ).split(",")
+                if r.strip()
+            ]
+            return {
+                "authenticated": True,
+                "auth_enabled": True,
+                "proxy_auth": True,
+                "username": header_user,
+                "roles": roles,
+                "role": "admin" if "admin" in roles else "viewer",
+            }
 
     session_mgr = _app_state.get("session_manager")
     token = request.cookies.get("netmap_session")
