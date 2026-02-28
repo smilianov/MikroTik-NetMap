@@ -4,7 +4,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useNetworkStore } from '../stores/networkStore';
-import { hideDevice as apiHide, unhideDevice as apiUnhide } from '../api/visibility';
+import { hideDevice as apiHide, unhideDevice as apiUnhide, pinDevice as apiPin, unpinDevice as apiUnpin } from '../api/visibility';
 
 interface ContextMenuProps {
   x: number;
@@ -17,8 +17,10 @@ interface ContextMenuProps {
 
 export function ContextMenu({ x, y, deviceId, onClose, onBlacklist, onMoveToMap }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const { hiddenDevices, maps, currentMap } = useNetworkStore();
+  const { hiddenDevices, maps, currentMap, devices } = useNetworkStore();
   const isHidden = hiddenDevices.has(deviceId);
+  const device = devices.find((d) => d.id === deviceId);
+  const isPinned = device?.pinned ?? false;
 
   // Close on click outside or Escape.
   useEffect(() => {
@@ -112,6 +114,23 @@ export function ContextMenu({ x, y, deviceId, onClose, onBlacklist, onMoveToMap 
             ))}
         </>
       )}
+      <div style={{ height: '1px', background: '#374151', margin: '4px 0' }} />
+      <div
+        style={itemStyle}
+        onMouseEnter={(e) => (e.currentTarget.style.background = '#283040')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        onClick={async () => {
+          if (isPinned) {
+            await apiUnpin(deviceId);
+          } else {
+            await apiPin(deviceId);
+          }
+          onClose();
+        }}
+      >
+        <span>{isPinned ? '\u{1F4CC}' : '\u{1F4CC}'}</span>
+        <span>{isPinned ? 'Unpin from all maps' : 'Pin to all maps'}</span>
+      </div>
       <div style={{ height: '1px', background: '#374151', margin: '4px 0' }} />
       <div
         style={{ ...itemStyle, color: '#EF4444' }}

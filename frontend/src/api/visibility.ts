@@ -66,3 +66,11 @@ export async function createMap(name: string, label: string): Promise<void> {
 export async function deleteMap(mapName: string): Promise<void> {
   await fetch(`/api/maps/${encodeURIComponent(mapName)}`, { method: 'DELETE' });
 }
+
+export async function pinDevice(deviceId: string): Promise<void> {
+  await fetch(`${API_BASE}/${encodeURIComponent(deviceId)}/pin`, { method: 'POST' });
+}
+
+export async function unpinDevice(deviceId: string): Promise<void> {
+  await fetch(`${API_BASE}/${encodeURIComponent(deviceId)}/pin`, { method: 'DELETE' });
+}

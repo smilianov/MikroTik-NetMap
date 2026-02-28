@@ -373,11 +373,12 @@ export function NetworkMap() {
     networkRef.current?.setOptions({ interaction: { dragNodes: dragUnlocked } });
   }, [dragUnlocked]);
 
-  // Toggle hierarchical layout mode.
+  // Toggle hierarchical layout mode (also rebuilds on tab switch while hierarchical).
   // Uses destroy+recreate pattern because vis-network's setOptions for
   // hierarchical toggle is buggy (support node level errors, nodes.update
   // restarts layout computation causing infinite jumping).
   useEffect(() => {
+    const wasHierarchical = hierarchicalRef.current;
     hierarchicalRef.current = hierarchicalLayout;
 
     // Skip the first render — init effect handles the initial network.
@@ -385,6 +386,10 @@ export function NetworkMap() {
       hierarchicalMountedRef.current = true;
       return;
     }
+
+    // If currentMap changed but we're NOT in hierarchical mode, skip —
+    // the device sync effect handles normal mode tab switches.
+    if (!hierarchicalLayout && !wasHierarchical) return;
 
     const container = containerRef.current;
     const oldNet = networkRef.current;
@@ -394,26 +399,37 @@ export function NetworkMap() {
     const nodeData = nodesRef.current.get();
     const edgeData = edgesRef.current.get();
 
-    // Save original (discovery) edges before switching to hierarchy.
-    if (hierarchicalLayout) {
+    // Save original (discovery) edges only when first entering hierarchy
+    // (not on tab switch while already hierarchical).
+    if (hierarchicalLayout && !wasHierarchical) {
       savedManualEdgesRef.current = edgeData;
     }
 
     // Destroy the old network.
     oldNet.destroy();
 
+    // In hierarchical mode, build nodes from devices filtered by current map
+    // (not from stale DataSet) so tab switches show the correct devices.
+    const curMap = currentMapRef.current;
+    const curHidden = hiddenDevicesRef.current;
+    const visDevices = devicesRef.current.filter((d) => !curHidden.has(d.id) && (d.map === curMap || d.pinned));
+    const visIds = new Set(visDevices.map((d) => d.id));
+
     // Create fresh DataSets.
     const newNodes = new DataSet(
       hierarchicalLayout
-        ? nodeData.map(({ x, y, ...rest }: any) => {
-            const dev = devicesRef.current.find((d) => d.id === rest.id);
-            if (dev) {
-              const ping = pingDataRef.current[rest.id];
-              const color = getPingColor(ping?.lastSeen ?? null, thresholdsRef.current);
-              return { ...rest, image: getDeviceImageUrl(dev.type, color) };
-            }
-            return rest;
-          }) // Strip positions; let hierarchy compute them
+        ? visDevices.map((dev) => {
+            const ping = pingDataRef.current[dev.id];
+            const color = getPingColor(ping?.lastSeen ?? null, thresholdsRef.current);
+            return {
+              id: dev.id,
+              label: `<b>${dev.name}</b>\n${dev.host}`,
+              shape: 'image' as const,
+              image: getDeviceImageUrl(dev.type, color),
+              size: 32,
+              title: `${dev.name} (${dev.host})\nType: ${dev.type}\nProfile: ${dev.profile}`,
+            };
+          })
         : nodeData.map((n: any) => {
             // Restore saved manual positions from store.
             const dev = devicesRef.current.find((d) => d.id === n.id);
@@ -422,11 +438,12 @@ export function NetworkMap() {
     );
     // In hierarchical mode, build parent→child edges from the `parent` field
     // so vis-network computes correct multi-level hierarchy.
+    // Only include edges where both parent and child are visible on this map.
     // In manual mode, restore the saved discovery edges.
     const newEdges = new DataSet(
       hierarchicalLayout
-        ? devicesRef.current
-            .filter((d) => d.parent)
+        ? visDevices
+            .filter((d) => d.parent && visIds.has(d.parent))
             .map((d) => ({
               id: `hierarchy-${d.parent}-${d.id}`,
               from: d.parent,
@@ -567,7 +584,7 @@ export function NetworkMap() {
         net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
       }, 50);
     }
-  }, [hierarchicalLayout, selectDevice]);
+  }, [hierarchicalLayout, currentMap, selectDevice]);
 
   // Sync devices → vis nodes when config changes (filter hidden devices).
   // Skip entirely in hierarchical mode — DataSet mutations restart layout computation.
@@ -575,7 +592,7 @@ export function NetworkMap() {
     if (hierarchicalRef.current) return;
     const nodes = nodesRef.current;
     const existingIds = new Set(nodes.getIds());
-    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id) && d.map === currentMap);
+    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id) && (d.map === currentMap || d.pinned));
     const configIds = new Set(visibleDevices.map((d) => d.id));
 
     for (const dev of visibleDevices) {
@@ -623,7 +640,7 @@ export function NetworkMap() {
 
     // Filter out links where either endpoint is hidden or not on the current map.
     const currentMapDeviceIds = new Set(
-      devices.filter((d) => d.map === currentMap).map((d) => d.id),
+      devices.filter((d) => (d.map === currentMap || d.pinned)).map((d) => d.id),
     );
     const visibleLinks = links.filter((l) => {
       const fromDev = l.from.split(':')[0];
@@ -720,7 +737,7 @@ export function NetworkMap() {
     let anyChanged = false;
 
     // Update node images from ping data — only when label or image changed.
-    const visDevices = curDevices.filter((d) => !curHidden.has(d.id) && d.map === curMap);
+    const visDevices = curDevices.filter((d) => !curHidden.has(d.id) && (d.map === curMap || d.pinned));
     for (const dev of visDevices) {
       const ping = curPingData[dev.id];
       const color = getPingColor(ping?.lastSeen ?? null, curThresholds);

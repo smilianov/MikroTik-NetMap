@@ -83,6 +83,35 @@ DEVICE_MAPS_FILE = (
     Path(__file__).resolve().parent.parent / "config" / "device_maps.json"
 )
 
+# Pinned devices — shown on all maps (persisted across restarts).
+PINNED_DEVICES_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "pinned_devices.json"
+)
+
+
+def _load_pinned_devices() -> list[str]:
+    """Load list of device IDs pinned to all maps."""
+    if not PINNED_DEVICES_FILE.exists():
+        return []
+    try:
+        with open(PINNED_DEVICES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to load pinned devices", exc_info=True)
+        return []
+
+
+async def _save_pinned_devices(pinned: list[str]) -> None:
+    """Save pinned devices list to JSON file."""
+    def _write() -> None:
+        PINNED_DEVICES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PINNED_DEVICES_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(set(pinned)), f, indent=2)
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.warning("Failed to save pinned devices", exc_info=True)
+
 
 def _load_device_maps() -> dict[str, str]:
     """Load device-to-map overrides from JSON file."""
@@ -210,6 +239,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
     discovery = app_state.get("topology_discovery")
     custom_pos = app_state.get("custom_positions", {})
     device_maps = app_state.get("device_maps", {})
+    pinned_set = set(app_state.get("pinned_devices", []))
     visibility = app_state.get("visibility_manager")
     if not cfg:
         return []
@@ -237,6 +267,8 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
         }
         if dd:
             entry["discovered"] = True
+        if d.name in pinned_set:
+            entry["pinned"] = True
         devices.append(entry)
 
     if discovery:
@@ -257,6 +289,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
                 "position": pos,
                 "discovered": True,
                 "parent": dd.discovered_by,
+                **({"pinned": True} if dd.name in pinned_set else {}),
             })
 
     return devices
@@ -515,6 +548,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if device_maps:
         logger.info("Loaded map overrides for %d devices", len(device_maps))
 
+    # Load pinned devices (shown on all maps).
+    pinned_devices = _load_pinned_devices()
+    app_state["pinned_devices"] = pinned_devices
+    if pinned_devices:
+        logger.info("Loaded %d pinned devices", len(pinned_devices))
+
     # Load map label overrides.
     map_labels = _load_map_labels()
     app_state["map_labels"] = map_labels
@@ -699,6 +738,39 @@ async def set_device_map(device_id: str, body: _SetMapBody):
     })
 
     return {"ok": True, "device_id": device_id, "map": body.map}
+
+
+@app.post("/api/devices/{device_id}/pin")
+async def pin_device(device_id: str):
+    """Pin a device so it appears on all maps."""
+    pinned = app_state.get("pinned_devices", [])
+    if device_id not in pinned:
+        pinned.append(device_id)
+        app_state["pinned_devices"] = pinned
+        await _save_pinned_devices(pinned)
+    # Broadcast full device list so clients pick up the pinned flag.
+    await ws_manager.broadcast({
+        "type": "config_refresh",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "devices": _build_all_devices_list(),
+    })
+    return {"ok": True, "device_id": device_id, "pinned": True}
+
+
+@app.delete("/api/devices/{device_id}/pin")
+async def unpin_device(device_id: str):
+    """Unpin a device so it only appears on its assigned map."""
+    pinned = app_state.get("pinned_devices", [])
+    if device_id in pinned:
+        pinned.remove(device_id)
+        app_state["pinned_devices"] = pinned
+        await _save_pinned_devices(pinned)
+    await ws_manager.broadcast({
+        "type": "config_refresh",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "devices": _build_all_devices_list(),
+    })
+    return {"ok": True, "device_id": device_id, "pinned": False}
 
 
 class _RenameMapBody(_BaseModel):

@@ -88,6 +88,7 @@ export function useWebSocket() {
               position: d.position || { x: 0, y: 0 },
               parent: d.parent || undefined,
               discovered: d.discovered || false,
+              pinned: d.pinned || false,
             })),
             (msg.links || []).map((l: any) => ({
               from: l.from,
@@ -135,6 +136,7 @@ export function useWebSocket() {
               position: d.position || { x: 0, y: 0 },
               parent: d.parent || undefined,
               discovered: d.discovered || false,
+              pinned: d.pinned || false,
             })),
             (msg.added_links || []).map((l: any) => ({
               from: l.from,
@@ -181,6 +183,24 @@ export function useWebSocket() {
 
         case 'map_label_change':
           updateMapLabel(msg.map_name, msg.label);
+          break;
+
+        case 'config_refresh':
+          // Server sent updated device list (e.g. after pin/unpin).
+          useNetworkStore.setState({
+            devices: (msg.devices || []).map((d: any) => ({
+              id: d.id,
+              name: d.name,
+              host: d.host,
+              type: d.type,
+              profile: d.profile,
+              map: d.map,
+              position: d.position || { x: 0, y: 0 },
+              parent: d.parent || undefined,
+              discovered: d.discovered || false,
+              pinned: d.pinned || false,
+            })),
+          });
           break;
 
         case 'maps_changed':

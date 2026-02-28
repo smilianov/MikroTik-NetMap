@@ -15,6 +15,7 @@ export interface DeviceInfo {
   position: { x: number; y: number };
   parent?: string;
   discovered?: boolean;
+  pinned?: boolean;
 }
 
 export interface PingData {
