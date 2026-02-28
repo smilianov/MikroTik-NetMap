@@ -600,9 +600,28 @@ export function NetworkMap() {
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
       const imageUrl = getDeviceImageUrl(dev.type, color);
 
+      // Build status line (same logic as animation loop) so labels stay consistent.
+      let statusLine = '';
+      if (ping?.lastSeen) {
+        const elapsed = (Date.now() - new Date(ping.lastSeen).getTime()) / 1000;
+        if (elapsed <= 35) {
+          statusLine = ping.rttMs !== null && ping.rttMs !== undefined ? `${ping.rttMs.toFixed(1)} ms` : '';
+        } else if (elapsed < 195) {
+          statusLine = `Missing: ${Math.round(elapsed)}s`;
+        } else if (elapsed < 3600) {
+          statusLine = `Missing: ${Math.round(elapsed / 60)}m`;
+        } else {
+          statusLine = `Missing: ${Math.round(elapsed / 3600)}h`;
+        }
+      } else {
+        statusLine = 'Never seen';
+      }
+
+      const label = `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`;
+
       const nodeData: any = {
         id: dev.id,
-        label: `<b>${dev.name}</b>\n${dev.host}`,
+        label,
         shape: 'image',
         image: imageUrl,
         size: 32,
@@ -628,7 +647,12 @@ export function NetworkMap() {
         nodes.remove(id);
       }
     }
-  }, [devices, thresholds, hiddenDevices, currentMap]); // Don't include pingData — handled by animation loop.
+
+    // Invalidate animation-loop label cache so it doesn't skip updates
+    // after we overwrote labels here.
+    lastNodeLabelsRef.current.clear();
+    lastNodeImagesRef.current.clear();
+  }, [devices, pingData, thresholds, hiddenDevices, currentMap]);
 
   // Sync links → vis edges (incremental, filter hidden device links).
   // Skip in hierarchical mode — DataSet mutations restart layout computation.

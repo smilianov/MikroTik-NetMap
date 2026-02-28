@@ -767,6 +767,9 @@ class TopologyDiscovery:
         self._device_positions.pop(device_id, None)
         self._configured_names.discard(device_id)
 
+        # Also remove from queryable device list (cfg.devices shared reference).
+        self._devices[:] = [d for d in self._devices if d.name != device_id]
+
         # Remove all links involving this device.
         for link_id in list(self.discovered_links.keys()):
             link = self.discovered_links[link_id]
