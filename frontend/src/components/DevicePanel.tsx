@@ -2,12 +2,15 @@
  * Slide-in device detail panel (shown on double-click).
  */
 
+import React, { useState } from 'react';
 import { useNetworkStore } from '../stores/networkStore';
 import { getPingColor } from '../utils/colorThresholds';
 import { formatRtt, formatBandwidth } from '../utils/formatters';
+import { hideDevice as apiHide, unhideDevice as apiUnhide, blacklistDevice as apiBlacklist, pinDevice as apiPin, unpinDevice as apiUnpin, moveDeviceToMap as apiMoveToMap } from '../api/visibility';
 
 export function DevicePanel() {
-  const { devices, pingData, trafficData, thresholds, selectedDevice, selectDevice } = useNetworkStore();
+  const { devices, pingData, trafficData, thresholds, selectedDevice, selectDevice, hiddenDevices, maps, currentMap } = useNetworkStore();
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   if (!selectedDevice) return null;
 
@@ -19,6 +22,8 @@ export function DevicePanel() {
   const elapsed = ping?.lastSeen
     ? (Date.now() - new Date(ping.lastSeen).getTime()) / 1000
     : null;
+  const isHidden = hiddenDevices.has(device.id);
+  const isPinned = device.pinned ?? false;
 
   return (
     <div style={{
@@ -170,9 +175,84 @@ export function DevicePanel() {
           </div>
         );
       })()}
+
+      {/* Action buttons */}
+      <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <button
+          onClick={async () => {
+            if (isHidden) await apiUnhide(device.id);
+            else await apiHide(device.id);
+          }}
+          style={actionBtnStyle}
+        >
+          {isHidden ? 'Unhide Device' : 'Hide Device'}
+        </button>
+        <button
+          onClick={async () => {
+            if (isPinned) await apiUnpin(device.id);
+            else await apiPin(device.id);
+          }}
+          style={actionBtnStyle}
+        >
+          {isPinned ? 'Unpin from all maps' : 'Pin to all maps'}
+        </button>
+        {maps.length > 1 && (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {maps.filter((m) => m.name !== currentMap).map((m) => (
+              <button
+                key={m.name}
+                onClick={async () => {
+                  await apiMoveToMap(device.id, m.name);
+                }}
+                style={{ ...actionBtnStyle, flex: '1 1 auto', fontSize: '12px' }}
+              >
+                Move to {m.label || m.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {!confirmRemove ? (
+          <button
+            onClick={() => setConfirmRemove(true)}
+            style={{ ...actionBtnStyle, color: '#EF4444', borderColor: '#7F1D1D' }}
+          >
+            Remove Device
+          </button>
+        ) : (
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={async () => {
+                await apiBlacklist(device.id);
+                setConfirmRemove(false);
+                selectDevice(null);
+              }}
+              style={{ ...actionBtnStyle, flex: 1, background: '#7F1D1D', color: '#FCA5A5', borderColor: '#EF4444' }}
+            >
+              Confirm Remove
+            </button>
+            <button
+              onClick={() => setConfirmRemove(false)}
+              style={{ ...actionBtnStyle, flex: 1 }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
+const actionBtnStyle: React.CSSProperties = {
+  padding: '8px 12px',
+  background: '#111827',
+  border: '1px solid #374151',
+  borderRadius: '6px',
+  color: '#D1D5DB',
+  fontSize: '13px',
+  cursor: 'pointer',
+  fontFamily: 'Inter, system-ui, sans-serif',
+};
 
 function InfoCard({
   label,

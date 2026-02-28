@@ -236,7 +236,6 @@ export function NetworkMap() {
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!dragUnlockedRef.current) return;
       const rect = canvas.getBoundingClientRect();
       const domX = e.clientX - rect.left;
       const domY = e.clientY - rect.top;
