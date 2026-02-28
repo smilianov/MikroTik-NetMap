@@ -14,6 +14,7 @@ Part of the **MTM by LS** monitoring suite alongside [Monitoring-Codex](https://
 - **Interactive vis-network graph** — zoom, pan, hover tooltips
 - **SVG device icons** — routers, switches, APs, servers with coloured status dots
 - **Drag-to-reposition** with position persistence (lock/unlock toggle)
+- **Hierarchical layout toggle** — tree view from parent→child discovery, with free-axis drag
 - **Device sidebar** with search, sorted by status
 - **Status bar** showing online / degraded / offline counts and live WebSocket indicator
 - **Double-click drill-down** panel with device details
@@ -72,7 +73,10 @@ For a **complete step-by-step guide** covering SSH key setup, Claude Code integr
 ### 1. Clone & configure
 
 ```bash
+# GitHub
 git clone git@github.com:smilianov/MikroTik-NetMap.git
+# GitLab (internal)
+# git clone https://10.0.0.60/autonomous-trio/MikroTik-NetMap.git
 cd MikroTik-NetMap
 
 cp config/netmap.example.yaml config/netmap.yaml
@@ -437,6 +441,13 @@ Connect to `ws://host:8585/ws`. When auth is enabled, the `netmap_session` cooki
 | Deploy | Docker | Single container, volume-mount config |
 
 ---
+
+## Repositories
+
+| Mirror | URL |
+|--------|-----|
+| **GitHub** | [smilianov/MikroTik-NetMap](https://github.com/smilianov/MikroTik-NetMap) |
+| **GitLab** | [autonomous-trio/MikroTik-NetMap](https://10.0.0.60/autonomous-trio/MikroTik-NetMap) (internal) |
 
 ## Related Projects
 

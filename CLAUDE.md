@@ -1,4 +1,9 @@
-# MikroTik-NetMap (MikroTik-NetMap)
+# MikroTik-NetMap
+
+## Repositories
+- **GitHub:** [smilianov/MikroTik-NetMap](https://github.com/smilianov/MikroTik-NetMap)
+- **GitLab:** [autonomous-trio/MikroTik-NetMap](https://10.0.0.60/autonomous-trio/MikroTik-NetMap) (internal)
+- **Remotes:** `origin` = GitHub, `gitlab` = GitLab (HTTPS + token, sslVerify=false)
 
 ## Project Overview
 Real-time MikroTik network topology dashboard — a web-based alternative to The Dude.
