@@ -214,12 +214,18 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
     if not cfg:
         return []
 
+    # Build lookup for discovered devices (needed because PingMonitor.add_device
+    # mutates cfg.devices via shared reference, so cfg.devices may contain
+    # discovered devices too).
+    discovered_map = discovery.discovered_devices if discovery else {}
+
     devices = []
     for d in cfg.devices:
         if visibility and visibility.is_blacklisted(d.name):
             continue
+        dd = discovered_map.get(d.name)
         pos = custom_pos.get(d.name, {"x": d.position.x, "y": d.position.y})
-        devices.append({
+        entry: dict[str, Any] = {
             "id": d.name,
             "name": d.name,
             "host": d.host,
@@ -227,7 +233,11 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
             "profile": d.profile,
             "map": device_maps.get(d.name, d.map),
             "position": pos,
-        })
+            "parent": dd.discovered_by if dd else None,
+        }
+        if dd:
+            entry["discovered"] = True
+        devices.append(entry)
 
     if discovery:
         for dd in discovery.discovered_devices.values():
@@ -246,6 +256,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
                 "map": device_maps.get(dd.name, "main"),
                 "position": pos,
                 "discovered": True,
+                "parent": dd.discovered_by,
             })
 
     return devices
@@ -364,6 +375,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "map": app_state.get("device_maps", {}).get(dd.name, "main"),
                 "position": {"x": dd.position.x, "y": dd.position.y},
                 "discovered": True,
+                "parent": dd.discovered_by,
             }
             for dd in added_devices
         ],

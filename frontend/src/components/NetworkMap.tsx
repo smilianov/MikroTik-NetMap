@@ -86,6 +86,12 @@ export function NetworkMap() {
   const linkFirstDeviceRef = useRef<string | null>(null);
   // Edge context menu state (for right-click on edges).
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ x: number; y: number; edgeId: string; isManual: boolean } | null>(null);
+  // Hierarchical layout toggle.
+  const [hierarchicalLayout, setHierarchicalLayout] = useState(false);
+  const hierarchicalRef = useRef(false);
+  const hierarchicalMountedRef = useRef(false); // Skip first render
+  const savedManualEdgesRef = useRef<any[]>([]); // Original edges for restoring manual mode
+
   // Map tab editing state.
   const [editingMap, setEditingMap] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
@@ -367,8 +373,206 @@ export function NetworkMap() {
     networkRef.current?.setOptions({ interaction: { dragNodes: dragUnlocked } });
   }, [dragUnlocked]);
 
-  // Sync devices → vis nodes when config changes (filter hidden devices).
+  // Toggle hierarchical layout mode.
+  // Uses destroy+recreate pattern because vis-network's setOptions for
+  // hierarchical toggle is buggy (support node level errors, nodes.update
+  // restarts layout computation causing infinite jumping).
   useEffect(() => {
+    hierarchicalRef.current = hierarchicalLayout;
+
+    // Skip the first render — init effect handles the initial network.
+    if (!hierarchicalMountedRef.current) {
+      hierarchicalMountedRef.current = true;
+      return;
+    }
+
+    const container = containerRef.current;
+    const oldNet = networkRef.current;
+    if (!container || !oldNet) return;
+
+    // Gather current node and edge data from DataSets.
+    const nodeData = nodesRef.current.get();
+    const edgeData = edgesRef.current.get();
+
+    // Save original (discovery) edges before switching to hierarchy.
+    if (hierarchicalLayout) {
+      savedManualEdgesRef.current = edgeData;
+    }
+
+    // Destroy the old network.
+    oldNet.destroy();
+
+    // Create fresh DataSets.
+    const newNodes = new DataSet(
+      hierarchicalLayout
+        ? nodeData.map(({ x, y, ...rest }: any) => {
+            const dev = devicesRef.current.find((d) => d.id === rest.id);
+            if (dev) {
+              const ping = pingDataRef.current[rest.id];
+              const color = getPingColor(ping?.lastSeen ?? null, thresholdsRef.current);
+              return { ...rest, image: getDeviceImageUrl(dev.type, color) };
+            }
+            return rest;
+          }) // Strip positions; let hierarchy compute them
+        : nodeData.map((n: any) => {
+            // Restore saved manual positions from store.
+            const dev = devicesRef.current.find((d) => d.id === n.id);
+            return dev ? { ...n, x: dev.position.x, y: dev.position.y } : n;
+          }),
+    );
+    // In hierarchical mode, build parent→child edges from the `parent` field
+    // so vis-network computes correct multi-level hierarchy.
+    // In manual mode, restore the saved discovery edges.
+    const newEdges = new DataSet(
+      hierarchicalLayout
+        ? devicesRef.current
+            .filter((d) => d.parent)
+            .map((d) => ({
+              id: `hierarchy-${d.parent}-${d.id}`,
+              from: d.parent,
+              to: d.id,
+              color: { color: '#4B5563' },
+              arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+            }))
+        : savedManualEdgesRef.current,
+    );
+    nodesRef.current = newNodes;
+    edgesRef.current = newEdges;
+
+    // Build options for the new network.
+    const baseOptions: any = {
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        zoomView: true,
+        dragView: true,
+        dragNodes: dragUnlockedRef.current,
+      },
+      nodes: {
+        font: { size: 13, face: 'Inter, system-ui, sans-serif', color: '#E5E7EB', multi: 'html' },
+        borderWidth: 0,
+        shapeProperties: { useBorderWithImage: false, useImageSize: false },
+        shadow: { enabled: true, color: 'rgba(0,0,0,0.4)', size: 8, x: 2, y: 2 },
+      },
+      edges: {
+        color: { color: '#4B5563', hover: '#9CA3AF', highlight: '#60A5FA' },
+        smooth: hierarchicalLayout
+          ? { enabled: true, type: 'cubicBezier', roundness: 0.5 }
+          : { enabled: true, type: 'continuous', roundness: 0.2 },
+        font: { size: 11, color: '#9CA3AF', strokeWidth: 3, strokeColor: '#1F2937', align: 'top' },
+      },
+      physics: { enabled: false }, // Always off — hierarchical computes positions synchronously
+    };
+
+    if (hierarchicalLayout) {
+      baseOptions.layout = {
+        hierarchical: {
+          enabled: true,
+          direction: 'UD',
+          levelSeparation: 200,
+          nodeSpacing: 150,
+          sortMethod: 'directed',
+        },
+      };
+    }
+
+    const net = new Network(container, { nodes: newNodes, edges: newEdges }, baseOptions);
+
+    // Re-register event listeners (same as init effect).
+    net.on('doubleClick', (params) => {
+      if (params.nodes.length > 0) selectDevice(params.nodes[0]);
+    });
+    net.on('click', (params) => {
+      setEdgeContextMenu(null);
+      setTabMenu(null);
+      if (linkModeRef.current && params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        if (!linkFirstDeviceRef.current) {
+          setLinkFirstDevice(nodeId);
+        } else if (nodeId !== linkFirstDeviceRef.current) {
+          setLinkDialog({ from: linkFirstDeviceRef.current, to: nodeId });
+          setLinkFirstDevice(null);
+          setLinkMode(false);
+        }
+        return;
+      }
+      if (params.nodes.length === 0) selectDevice(null);
+    });
+    net.on('dragStart', (params) => {
+      if (params.nodes.length > 0) isDraggingRef.current = true;
+    });
+    net.on('dragEnd', (params) => {
+      isDraggingRef.current = false;
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        const pos = net.getPosition(nodeId);
+        sendWsMessage({
+          type: 'position_update',
+          device_id: nodeId,
+          position: { x: Math.round(pos.x), y: Math.round(pos.y) },
+        });
+      }
+    });
+    net.on('afterDrawing', (ctx: CanvasRenderingContext2D) => {
+      const now = performance.now();
+      const dt = (now - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = now;
+      const curLinks = linksRef.current;
+      const curTraffic = trafficDataRef.current;
+      for (const link of curLinks) {
+        const edgeId = `${link.from}-${link.to}`;
+        const fromDev = link.from.split(':')[0];
+        const toDev = link.to.split(':')[0];
+        const fromIf = link.from.split(':').slice(1).join(':');
+        const toIf = link.to.split(':').slice(1).join(':');
+        const fromTraffic = curTraffic[fromDev]?.[fromIf];
+        const toTraffic = curTraffic[toDev]?.[toIf];
+        const maxBps = Math.max(fromTraffic?.txBps || 0, fromTraffic?.rxBps || 0, toTraffic?.txBps || 0, toTraffic?.rxBps || 0);
+        if (maxBps <= 0) { particlesRef.current.delete(edgeId); continue; }
+        let fromPos: { x: number; y: number }, toPos: { x: number; y: number };
+        try { fromPos = net.getPosition(fromDev); toPos = net.getPosition(toDev); } catch { continue; }
+        const speedBps = link.speed * 1_000_000;
+        const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
+        const targetCount = Math.min(5, Math.max(1, Math.ceil(utilPct / 20)));
+        const particleSpeed = 0.3 + Math.min(utilPct / 100, 1) * 0.7;
+        const color = getTrafficColor(utilPct);
+        let particles = particlesRef.current.get(edgeId) || [];
+        while (particles.length < targetCount) particles.push({ t: Math.random(), speed: particleSpeed });
+        if (particles.length > targetCount) particles = particles.slice(0, targetCount);
+        ctx.save(); ctx.fillStyle = color; ctx.globalAlpha = 0.85;
+        for (const p of particles) { p.t += p.speed * dt; if (p.t > 1) p.t -= 1; const x = fromPos.x + (toPos.x - fromPos.x) * p.t; const y = fromPos.y + (toPos.y - fromPos.y) * p.t; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); }
+        ctx.restore();
+        particlesRef.current.set(edgeId, particles);
+      }
+    });
+
+    // Clear caches (new DataSets).
+    lastNodeLabelsRef.current.clear();
+    lastNodeImagesRef.current.clear();
+    lastEdgeColorsRef.current.clear();
+    particlesRef.current.clear();
+
+    networkRef.current = net;
+
+    // After hierarchical layout computes positions, disable it so drag is free on both axes.
+    if (hierarchicalLayout) {
+      net.once('stabilized', () => {
+        net.setOptions({ layout: { hierarchical: { enabled: false } } });
+        net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+      });
+      // Trigger stabilization (physics is off, so stabilize fires after initial layout).
+      net.stabilize();
+    } else {
+      setTimeout(() => {
+        net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+      }, 50);
+    }
+  }, [hierarchicalLayout, selectDevice]);
+
+  // Sync devices → vis nodes when config changes (filter hidden devices).
+  // Skip entirely in hierarchical mode — DataSet mutations restart layout computation.
+  useEffect(() => {
+    if (hierarchicalRef.current) return;
     const nodes = nodesRef.current;
     const existingIds = new Set(nodes.getIds());
     const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id) && d.map === currentMap);
@@ -379,16 +583,20 @@ export function NetworkMap() {
       const color = getPingColor(ping?.lastSeen ?? null, thresholds);
       const imageUrl = getDeviceImageUrl(dev.type, color);
 
-      const nodeData = {
+      const nodeData: any = {
         id: dev.id,
         label: `<b>${dev.name}</b>\n${dev.host}`,
         shape: 'image',
         image: imageUrl,
         size: 32,
-        x: dev.position.x,
-        y: dev.position.y,
         title: `${dev.name} (${dev.host})\nType: ${dev.type}\nProfile: ${dev.profile}`,
       };
+
+      // Only set x/y when NOT in hierarchical mode (otherwise fights physics).
+      if (!hierarchicalRef.current) {
+        nodeData.x = dev.position.x;
+        nodeData.y = dev.position.y;
+      }
 
       if (existingIds.has(dev.id)) {
         nodes.update(nodeData);
@@ -406,7 +614,9 @@ export function NetworkMap() {
   }, [devices, thresholds, hiddenDevices, currentMap]); // Don't include pingData — handled by animation loop.
 
   // Sync links → vis edges (incremental, filter hidden device links).
+  // Skip in hierarchical mode — DataSet mutations restart layout computation.
   useEffect(() => {
+    if (hierarchicalRef.current) return;
     const edges = edgesRef.current;
     const existingIds = new Set(edges.getIds());
     const newIds = new Set<string>();
@@ -489,7 +699,8 @@ export function NetworkMap() {
     }
     lastAnimTimeRef.current = now;
 
-    // Skip data updates while drag mode is unlocked for smooth repositioning.
+    // Skip data updates while drag mode is unlocked or user is actively dragging.
+    // In hierarchical mode with physics:false, nodes.update() only changes visuals — safe.
     if (dragUnlockedRef.current || isDraggingRef.current) {
       animFrameRef.current = requestAnimationFrame(updateNodes);
       return;
@@ -839,6 +1050,29 @@ export function NetworkMap() {
         <button onClick={handleZoomOut} style={btnStyle} title="Zoom out">&minus;</button>
         <button onClick={handleFitAll} style={{ ...btnStyle, fontSize: '13px', fontWeight: 700 }} title="Fit all">
           [ ]
+        </button>
+        <button
+          onClick={() => setHierarchicalLayout((v) => !v)}
+          style={{
+            ...btnStyle,
+            background: hierarchicalLayout ? '#1E3A5F' : '#1F2937',
+            color: hierarchicalLayout ? '#60A5FA' : '#D1D5DB',
+            border: hierarchicalLayout ? '1px solid #3B82F6' : '1px solid #374151',
+            fontSize: '16px',
+          }}
+          title={hierarchicalLayout ? 'Switch to manual layout' : 'Switch to hierarchical layout'}
+        >
+          {/* Tree icon using SVG */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="4" r="2" />
+            <circle cx="6" cy="14" r="2" />
+            <circle cx="18" cy="14" r="2" />
+            <circle cx="12" cy="22" r="2" />
+            <line x1="12" y1="6" x2="6" y2="12" />
+            <line x1="12" y1="6" x2="18" y2="12" />
+            <line x1="6" y1="16" x2="12" y2="20" />
+            <line x1="18" y1="16" x2="12" y2="20" />
+          </svg>
         </button>
       </div>
 

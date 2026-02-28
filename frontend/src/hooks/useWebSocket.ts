@@ -86,6 +86,8 @@ export function useWebSocket() {
               profile: d.profile,
               map: d.map,
               position: d.position || { x: 0, y: 0 },
+              parent: d.parent || undefined,
+              discovered: d.discovered || false,
             })),
             (msg.links || []).map((l: any) => ({
               from: l.from,
@@ -131,6 +133,8 @@ export function useWebSocket() {
               profile: d.profile || 'edge',
               map: d.map || 'main',
               position: d.position || { x: 0, y: 0 },
+              parent: d.parent || undefined,
+              discovered: d.discovered || false,
             })),
             (msg.added_links || []).map((l: any) => ({
               from: l.from,

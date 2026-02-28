@@ -13,6 +13,8 @@ export interface DeviceInfo {
   profile: string;
   map: string;
   position: { x: number; y: number };
+  parent?: string;
+  discovered?: boolean;
 }
 
 export interface PingData {
