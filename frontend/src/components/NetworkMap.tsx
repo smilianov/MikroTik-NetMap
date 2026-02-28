@@ -562,6 +562,32 @@ export function NetworkMap() {
       }
     });
 
+    // Re-register right-click context menu on the container (lost when network recreated).
+    const handleCtx = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = container.getBoundingClientRect();
+      const domX = e.clientX - rect.left;
+      const domY = e.clientY - rect.top;
+      const nodeId = net.getNodeAt({ x: domX, y: domY });
+      if (nodeId) {
+        setContextMenu({ x: e.clientX, y: e.clientY, deviceId: nodeId as string });
+        setEdgeContextMenu(null);
+        setTabMenu(null);
+        return;
+      }
+      const edgeId = net.getEdgeAt({ x: domX, y: domY });
+      if (edgeId) {
+        const curLinks = linksRef.current;
+        const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
+        if (link?.manual) {
+          setEdgeContextMenu({ x: e.clientX, y: e.clientY, edgeId: edgeId as string, isManual: true });
+          setContextMenu(null);
+        }
+      }
+    };
+    container.addEventListener('contextmenu', handleCtx);
+
     // Clear caches (new DataSets).
     lastNodeLabelsRef.current.clear();
     lastNodeImagesRef.current.clear();
