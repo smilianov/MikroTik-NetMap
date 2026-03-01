@@ -552,7 +552,8 @@ class TopologyDiscovery:
     async def _sweep(self) -> dict[str, Any]:
         """Query all devices, build topology, detect changes.
 
-        Returns a dict with keys: added_devices, added_links, removed_links.
+        Returns a dict with keys:
+        added_devices, updated_devices, added_links, removed_links.
         """
         now = datetime.now(timezone.utc)
 
@@ -588,7 +589,12 @@ class TopologyDiscovery:
 
         if not all_half_links:
             logger.debug("Discovery sweep: no neighbors found")
-            return {"added_devices": [], "added_links": [], "removed_links": []}
+            return {
+                "added_devices": [],
+                "updated_devices": [],
+                "added_links": [],
+                "removed_links": [],
+            }
 
         # Infer parent-child hierarchy from interface grouping.
         parent_map = self._infer_hierarchy(all_half_links)
@@ -747,15 +753,25 @@ class TopologyDiscovery:
             len(self.interface_speeds),
         )
 
+        updated_devices: list[DiscoveredDevice] = []
+
         # Recalculate tree layout if hierarchy changed or new devices were added.
         if added_devices or hierarchy_changed:
             self._recalculate_tree_positions()
+            # Send updated positions/parents for existing discovered devices.
+            # Newly-added devices are emitted separately in added_devices.
+            added_names = {d.name for d in added_devices}
+            updated_devices = [
+                dev for name, dev in self.discovered_devices.items()
+                if name not in added_names
+            ]
 
         # Persist to disk.
         self._save_persistence()
 
         return {
             "added_devices": added_devices,
+            "updated_devices": updated_devices,
             "added_links": added_links,
             "removed_links": removed_links,
         }

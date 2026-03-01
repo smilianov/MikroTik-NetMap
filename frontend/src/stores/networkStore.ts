@@ -82,6 +82,7 @@ interface NetworkState {
     addedLinks: LinkInfo[],
     removedLinks: string[],
     removedDevices?: string[],
+    updatedDevices?: DeviceInfo[],
   ) => void;
   setVisibility: (hidden: string[], blacklisted: string[]) => void;
   removeDevice: (deviceId: string) => void;
@@ -134,17 +135,27 @@ export const useNetworkStore = create<NetworkState>((set) => ({
       ),
     })),
 
-  mergeTopology: (addedDevices, addedLinks, removedLinks, removedDevices) =>
+  mergeTopology: (addedDevices, addedLinks, removedLinks, removedDevices, updatedDevices) =>
     set((state) => {
       // Remove devices if requested.
       const removedDevSet = new Set(removedDevices || []);
-      let baseDevices = removedDevSet.size > 0
+      const baseDevices = removedDevSet.size > 0
         ? state.devices.filter((d) => !removedDevSet.has(d.id))
         : state.devices;
 
-      // Merge new devices (skip duplicates).
-      const existingIds = new Set(baseDevices.map((d) => d.id));
-      const newDevices = addedDevices.filter((d) => !existingIds.has(d.id));
+      // Merge updated + added devices by ID.
+      const mergedDeviceMap = new Map(baseDevices.map((d) => [d.id, d]));
+
+      for (const dev of (updatedDevices || [])) {
+        if (removedDevSet.has(dev.id)) continue;
+        const existing = mergedDeviceMap.get(dev.id);
+        mergedDeviceMap.set(dev.id, existing ? { ...existing, ...dev } : dev);
+      }
+      for (const dev of addedDevices) {
+        if (removedDevSet.has(dev.id)) continue;
+        const existing = mergedDeviceMap.get(dev.id);
+        mergedDeviceMap.set(dev.id, existing ? { ...existing, ...dev } : dev);
+      }
 
       // Build a set of removed link IDs for filtering.
       const removedSet = new Set(removedLinks);
@@ -161,7 +172,7 @@ export const useNetworkStore = create<NetworkState>((set) => ({
       );
 
       return {
-        devices: [...baseDevices, ...newDevices],
+        devices: Array.from(mergedDeviceMap.values()),
         links: [...filteredLinks, ...newLinks],
       };
     }),

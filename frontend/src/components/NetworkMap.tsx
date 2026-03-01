@@ -268,6 +268,7 @@ export function NetworkMap() {
     // Drag-to-reposition → send position update via WebSocket.
     network.on('dragEnd', (params) => {
       isDraggingRef.current = false;
+      if (hierarchicalRef.current) return;
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0] as string;
         const pos = network.getPosition(nodeId);
@@ -369,8 +370,17 @@ export function NetworkMap() {
   // Toggle drag mode when lock state changes.
   useEffect(() => {
     dragUnlockedRef.current = dragUnlocked;
-    networkRef.current?.setOptions({ interaction: { dragNodes: dragUnlocked } });
+    networkRef.current?.setOptions({
+      interaction: { dragNodes: hierarchicalRef.current ? false : dragUnlocked },
+    });
   }, [dragUnlocked]);
+
+  // Hierarchical mode always locks drag/save to avoid overwriting manual positions.
+  useEffect(() => {
+    if (hierarchicalLayout && dragUnlocked) {
+      setDragUnlocked(false);
+    }
+  }, [hierarchicalLayout, dragUnlocked]);
 
   // Toggle hierarchical layout mode (also rebuilds on tab switch while hierarchical).
   // Uses destroy+recreate pattern because vis-network's setOptions for
@@ -462,7 +472,7 @@ export function NetworkMap() {
         tooltipDelay: 200,
         zoomView: true,
         dragView: true,
-        dragNodes: dragUnlockedRef.current,
+        dragNodes: hierarchicalLayout ? false : dragUnlockedRef.current,
       },
       nodes: {
         font: { size: 13, face: 'Inter, system-ui, sans-serif', color: '#E5E7EB', multi: 'html' },
@@ -519,6 +529,7 @@ export function NetworkMap() {
     });
     net.on('dragEnd', (params) => {
       isDraggingRef.current = false;
+      if (hierarchicalRef.current) return;
       if (params.nodes.length > 0) {
         const nodeId = params.nodes[0] as string;
         const pos = net.getPosition(nodeId);
@@ -1080,14 +1091,19 @@ export function NetworkMap() {
         zIndex: 50,
       }}>
         <button
-          onClick={() => setDragUnlocked((v) => !v)}
+          onClick={() => {
+            if (hierarchicalLayout) return;
+            setDragUnlocked((v) => !v);
+          }}
+          disabled={hierarchicalLayout}
           style={{
             ...btnStyle,
-            background: dragUnlocked ? '#374151' : '#1F2937',
-            color: dragUnlocked ? '#F59E0B' : '#D1D5DB',
-            border: dragUnlocked ? '1px solid #F59E0B' : '1px solid #374151',
+            background: hierarchicalLayout ? '#111827' : dragUnlocked ? '#374151' : '#1F2937',
+            color: hierarchicalLayout ? '#4B5563' : dragUnlocked ? '#F59E0B' : '#D1D5DB',
+            border: hierarchicalLayout ? '1px solid #1F2937' : dragUnlocked ? '1px solid #F59E0B' : '1px solid #374151',
+            cursor: hierarchicalLayout ? 'not-allowed' : 'pointer',
           }}
-          title={dragUnlocked ? 'Lock positions (disable drag)' : 'Unlock positions (enable drag)'}
+          title={hierarchicalLayout ? 'Drag is disabled in auto layout mode' : dragUnlocked ? 'Lock positions (disable drag)' : 'Unlock positions (enable drag)'}
         >
           {dragUnlocked ? '\u{1F513}' : '\u{1F512}'}
         </button>

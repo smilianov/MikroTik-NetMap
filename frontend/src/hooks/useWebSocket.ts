@@ -86,9 +86,9 @@ export function useWebSocket() {
               profile: d.profile,
               map: d.map,
               position: d.position || { x: 0, y: 0 },
-              parent: d.parent || undefined,
-              discovered: d.discovered || false,
-              pinned: d.pinned || false,
+              parent: d.parent ?? undefined,
+              discovered: d.discovered ?? false,
+              pinned: d.pinned ?? false,
             })),
             (msg.links || []).map((l: any) => ({
               from: l.from,
@@ -134,9 +134,9 @@ export function useWebSocket() {
               profile: d.profile || 'edge',
               map: d.map || 'main',
               position: d.position || { x: 0, y: 0 },
-              parent: d.parent || undefined,
-              discovered: d.discovered || false,
-              pinned: d.pinned || false,
+              parent: d.parent ?? undefined,
+              discovered: d.discovered ?? false,
+              pinned: d.pinned ?? false,
             })),
             (msg.added_links || []).map((l: any) => ({
               from: l.from,
@@ -148,6 +148,18 @@ export function useWebSocket() {
             })),
             msg.removed_links || [],
             msg.removed_devices || [],
+            (msg.updated_devices || []).map((d: any) => ({
+              id: d.id,
+              name: d.name,
+              host: d.host,
+              type: d.type,
+              profile: d.profile || 'edge',
+              map: d.map || 'main',
+              position: d.position || { x: 0, y: 0 },
+              parent: d.parent ?? undefined,
+              discovered: d.discovered ?? false,
+              pinned: d.pinned ?? false,
+            })),
           );
           break;
 
@@ -196,9 +208,9 @@ export function useWebSocket() {
               profile: d.profile,
               map: d.map,
               position: d.position || { x: 0, y: 0 },
-              parent: d.parent || undefined,
-              discovered: d.discovered || false,
-              pinned: d.pinned || false,
+              parent: d.parent ?? undefined,
+              discovered: d.discovered ?? false,
+              pinned: d.pinned ?? false,
             })),
           });
           break;

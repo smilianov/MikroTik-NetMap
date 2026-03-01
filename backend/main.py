@@ -363,6 +363,7 @@ async def _on_ping_update(states: list[PingState]) -> None:
 async def _on_topology_update(changes: dict[str, Any]) -> None:
     """Called by TopologyDiscovery when topology changes are detected."""
     added_devices = changes.get("added_devices", [])
+    updated_devices = changes.get("updated_devices", [])
     added_links = changes.get("added_links", [])
     removed_links = changes.get("removed_links", [])
 
@@ -411,6 +412,20 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "parent": dd.discovered_by,
             }
             for dd in added_devices
+        ],
+        "updated_devices": [
+            {
+                "id": dd.name,
+                "name": dd.name,
+                "host": dd.host,
+                "type": _infer_type_str(dd.board, dd.platform),
+                "profile": "edge",
+                "map": app_state.get("device_maps", {}).get(dd.name, "main"),
+                "position": {"x": dd.position.x, "y": dd.position.y},
+                "discovered": True,
+                "parent": dd.discovered_by,
+            }
+            for dd in updated_devices
         ],
         "added_links": [
             {
