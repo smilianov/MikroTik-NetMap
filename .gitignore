@@ -11,12 +11,17 @@ frontend/dist/
 
 # Config with secrets
 config/netmap.yaml
+config/netmap.demo.yaml
+config/custom_maps.json
+config/device_maps.json
+config/pinned_devices.json
 config/custom_positions.json
 config/discovered_topology.json
 .env
 .env.infisical
 .env.infisical.backup
 infisical-secrets.json
+NetMapPrompt.md
 
 # IDE
 .idea/
