@@ -6,7 +6,7 @@ services:
     ports:
       - "${NETMAP_PORT:-8585}:8585"
     volumes:
-      - ./config:/app/config:ro
+      - "${NETMAP_CONFIG_FILE:-./config/netmap.yaml}:/app/config/netmap.yaml:ro"
     env_file:
       - .env
     environment:
