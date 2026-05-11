@@ -6,8 +6,9 @@ services:
     ports:
       - "${NETMAP_PORT:-8585}:8585"
     volumes:
-      - "${NETMAP_CONFIG_FILE:-./config/netmap.yaml}:/app/config/netmap.yaml:ro"
+      - "${NETMAP_CONFIG_DIR:-./config}:/app/config"
     env_file:
       - .env
     environment:
       - NETMAP_CONFIG=/app/config/netmap.yaml
+      - NETMAP_PING_PRIVILEGED=true

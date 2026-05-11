@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -28,11 +29,19 @@ class PingMonitor:
         interval: float = 2.0,
         timeout: float = 1.0,
         on_update: Callable[[list[PingState]], Any] | None = None,
+        privileged: bool | None = None,
     ) -> None:
         self.devices = devices
         self.interval = interval
         self.timeout = timeout
         self.on_update = on_update
+        if privileged is None:
+            privileged = os.environ.get("NETMAP_PING_PRIVILEGED", "true").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+        self.privileged = privileged
         self.states: dict[str, PingState] = {}
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -49,7 +58,7 @@ class PingMonitor:
                 device.host,
                 count=1,
                 timeout=self.timeout,
-                privileged=False,  # Uses UDP fallback — no root needed
+                privileged=self.privileged,
             )
             if result.is_alive:
                 state.last_seen = datetime.now(timezone.utc)
