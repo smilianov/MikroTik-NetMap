@@ -283,6 +283,78 @@ def _configured_link_map(from_endpoint: str, to_endpoint: str) -> str:
     return from_map if from_map == to_map else from_map
 
 
+_DISCOVERY_TUNNEL_PATTERNS = (
+    "<",
+    "sstp",
+    "l2tp",
+    "pptp",
+    "ovpn",
+    "wireguard",
+    "wg",
+    "ipsec",
+)
+
+_DISCOVERY_VIRTUAL_PATTERNS = (
+    "vlan",
+    "mgmt",
+    "bridge",
+    "loopback",
+    "lo",
+    "bonding",
+)
+
+_DISCOVERY_PHYSICAL_PREFIXES = (
+    "ether",
+    "eth",
+    "sfp",
+    "combo",
+    "wlan",
+    "wifi",
+)
+
+
+def _endpoint_interface(endpoint: str) -> str:
+    raw = str(endpoint or "").split(":", 1)
+    return raw[1].strip() if len(raw) > 1 else ""
+
+
+def _interface_leaf(interface: str) -> str:
+    return interface.strip().split("/")[-1].lower()
+
+
+def _is_physical_discovery_interface(interface: str) -> bool:
+    leaf = _interface_leaf(interface)
+    if not leaf or leaf == "auto":
+        return True
+    if any(pattern in leaf for pattern in _DISCOVERY_TUNNEL_PATTERNS):
+        return False
+    if any(pattern in leaf for pattern in _DISCOVERY_VIRTUAL_PATTERNS):
+        return False
+    return leaf.startswith(_DISCOVERY_PHYSICAL_PREFIXES)
+
+
+def _known_discovery_device_names() -> set[str]:
+    cfg = app_state.get("config")
+    discovery = app_state.get("topology_discovery")
+    names = {d.name for d in cfg.devices} if cfg else set()
+    if discovery:
+        names.update(discovery.discovered_devices.keys())
+    return names
+
+
+def _display_discovery_link(link: Any) -> bool:
+    names = _known_discovery_device_names()
+    from_device = _endpoint_device(link.from_device)
+    to_device = _endpoint_device(link.to_device)
+    if from_device not in names or to_device not in names:
+        return False
+
+    return (
+        _is_physical_discovery_interface(_endpoint_interface(link.from_device))
+        and _is_physical_discovery_interface(_endpoint_interface(link.to_device))
+    )
+
+
 def _configured_parent_map() -> dict[str, str]:
     """Infer configured hierarchy from directed config links.
 
@@ -387,6 +459,8 @@ def _build_all_links_list() -> list[dict[str, Any]]:
 
     if discovery:
         for dl in discovery.discovered_links.values():
+            if not _display_discovery_link(dl):
+                continue
             links.append({
                 "from": dl.from_device,
                 "to": dl.to_device,
@@ -444,6 +518,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
 
     cfg = app_state.get("config")
     api_defaults = cfg.api_defaults if cfg else {}
+    display_added_links = [dl for dl in added_links if _display_discovery_link(dl)]
 
     # Add newly discovered devices to the ping monitor and traffic monitor.
     ping = app_state.get("ping_monitor")
@@ -512,7 +587,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "confirmed": dl.confirmed,
                 "map": _discovery_map_name(),
             }
-            for dl in added_links
+            for dl in display_added_links
         ],
         "removed_links": removed_links,
     })

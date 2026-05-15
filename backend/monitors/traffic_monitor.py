@@ -19,6 +19,13 @@ from models import DeviceConfig
 logger = logging.getLogger(__name__)
 
 
+def _safe_error(exc: Exception, password: str = "") -> str:
+    message = str(exc)
+    if password:
+        message = message.replace(password, "******")
+    return message.splitlines()[0][:240]
+
+
 @dataclass
 class _InterfaceCounters:
     """Snapshot of byte counters for one interface."""
@@ -105,13 +112,13 @@ class TrafficMonitor:
         try:
             interfaces = await client.get_interfaces()
             return (device.name, interfaces)
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Traffic query failed for %s (%s via %s)",
+                "Traffic query failed for %s (%s via %s): %s",
                 device.name,
                 device.host,
                 device.api_type,
-                exc_info=True,
+                _safe_error(exc, device.password),
             )
             return (device.name, [])
         finally:

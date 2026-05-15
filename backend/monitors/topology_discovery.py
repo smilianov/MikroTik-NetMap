@@ -40,6 +40,13 @@ _WIRELESS_PATTERNS = ("wlan", "wifi", "cap")
 _VPN_PATTERNS = ("l2tp", "ipsec", "wg", "ovpn", "sstp", "pptp", "gre", "vxlan")
 
 
+def _safe_error(exc: Exception, password: str = "") -> str:
+    message = str(exc)
+    if password:
+        message = message.replace(password, "******")
+    return message.splitlines()[0][:240]
+
+
 def _infer_link_type(interface_name: str) -> LinkType:
     """Infer link type from interface name."""
     lower = interface_name.lower()
@@ -396,10 +403,13 @@ class TopologyDiscovery:
                 if n.get("identity") or n.get("address")
             ]
             return {"device_name": device.name, "neighbors": half_links, "interfaces": eth_interfaces}
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Discovery failed for %s (%s via %s)",
-                device.name, device.host, device.api_type, exc_info=True,
+                "Discovery failed for %s (%s via %s): %s",
+                device.name,
+                device.host,
+                device.api_type,
+                _safe_error(exc, device.password),
             )
             return {"device_name": device.name, "neighbors": [], "interfaces": []}
         finally:

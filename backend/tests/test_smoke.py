@@ -282,6 +282,75 @@ def test_discovery_map_keeps_auto_layer_separate(sample_config: Path, monkeypatc
     assert links[1]["map"] == "auto"
 
 
+def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
+
+    import main as main_module
+    from models import DeviceConfig, DeviceType, DiscoveredLink, LinkConfig, Position
+
+    importlib.reload(main_module)
+
+    now = datetime.now(timezone.utc)
+    root = DeviceConfig(name="LS", host="10.0.0.1", type=DeviceType.ROUTER, position=Position())
+    sw1 = DeviceConfig(name="SW1", host="10.0.0.2", type=DeviceType.SWITCH, position=Position())
+    sw2 = DeviceConfig(name="SW2", host="10.0.0.3", type=DeviceType.SWITCH, position=Position())
+
+    physical = DiscoveredLink(
+        id="LS:sfp1-SW1:auto",
+        from_device="LS:bridge1/sfp-sfpplus1-uplink",
+        to_device="SW1:auto",
+        first_seen=now,
+        last_seen=now,
+    )
+    mgmt_mesh = DiscoveredLink(
+        id="SW1:vlan88-SW2:vlan88",
+        from_device="SW1:vlan88-mgmt",
+        to_device="SW2:vlan88-mgmt",
+        first_seen=now,
+        last_seen=now,
+        confirmed=True,
+    )
+    vpn_remote = DiscoveredLink(
+        id="LS:sstp-remote-Remote:auto",
+        from_device="LS:<sstp-remote>",
+        to_device="Remote:auto",
+        first_seen=now,
+        last_seen=now,
+    )
+
+    main_module.app_state["config"] = SimpleNamespace(
+        devices=[root, sw1, sw2],
+        maps=[SimpleNamespace(name="main", label="Manual", parent=None, background=None)],
+        links=[LinkConfig(**{"from": "LS:ether1", "to": "SW1:ether1"})],
+        discovery_enabled=True,
+        discovery_map="discovery",
+        discovery_map_label="Auto Discovery",
+    )
+    main_module.app_state["topology_discovery"] = SimpleNamespace(
+        discovered_devices={},
+        discovered_links={
+            physical.id: physical,
+            mgmt_mesh.id: mgmt_mesh,
+            vpn_remote.id: vpn_remote,
+        },
+    )
+    main_module.app_state["device_maps"] = {}
+    main_module.app_state["manual_link_manager"] = None
+
+    links = main_module._build_all_links_list()
+    discovered = [link for link in links if link.get("discovered")]
+
+    assert discovered == [{
+        "from": "LS:bridge1/sfp-sfpplus1-uplink",
+        "to": "SW1:auto",
+        "speed": 1000,
+        "type": "wired",
+        "discovered": True,
+        "confirmed": False,
+        "map": "discovery",
+    }]
+
+
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 
