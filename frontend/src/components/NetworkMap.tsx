@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Network, DataSet } from 'vis-network/standalone';
-import { useNetworkStore } from '../stores/networkStore';
+import { useNetworkStore, type DeviceInfo, type LinkInfo } from '../stores/networkStore';
 import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
 import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
 import { sendWsMessage } from '../hooks/useWebSocket';
@@ -31,6 +31,39 @@ function linkWidth(speed: number): number {
   if (speed >= 10000) return 4;
   if (speed >= 1000) return 2.5;
   return 1.5;
+}
+
+function endpointDevice(endpoint: string): string {
+  return endpoint.split(':')[0] || endpoint;
+}
+
+function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
+  const visibleIds = new Set(devices.map((d) => d.id));
+  const byChild = new Map<string, string>();
+
+  for (const dev of devices) {
+    if (dev.parent && visibleIds.has(dev.parent)) {
+      byChild.set(dev.id, dev.parent);
+    }
+  }
+
+  for (const link of links) {
+    const parent = endpointDevice(link.from);
+    const child = endpointDevice(link.to);
+    if (!parent || !child || parent === child) continue;
+    if (!visibleIds.has(parent) || !visibleIds.has(child)) continue;
+    if (!byChild.has(child)) {
+      byChild.set(child, parent);
+    }
+  }
+
+  return Array.from(byChild.entries()).map(([child, parent]) => ({
+    id: `hierarchy-${parent}-${child}`,
+    from: parent,
+    to: child,
+    color: { color: '#4B5563' },
+    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+  }));
 }
 
 /** Particle state for traffic animation on a single edge. */
@@ -445,21 +478,18 @@ export function NetworkMap() {
             return dev ? { ...n, x: dev.position.x, y: dev.position.y } : n;
           }),
     );
-    // In hierarchical mode, build parent→child edges from the `parent` field
-    // so vis-network computes correct multi-level hierarchy.
-    // Only include edges where both parent and child are visible on this map.
+    const visibleLinkEdges = linksRef.current.filter((link) => {
+      const fromDev = endpointDevice(link.from);
+      const toDev = endpointDevice(link.to);
+      return visIds.has(fromDev) && visIds.has(toDev);
+    });
+
+    // In hierarchical mode, build parent→child edges from the `parent` field,
+    // falling back to directed topology links when parent metadata is absent.
     // In manual mode, restore the saved discovery edges.
     const newEdges = new DataSet(
       hierarchicalLayout
-        ? visDevices
-            .filter((d) => d.parent && visIds.has(d.parent))
-            .map((d) => ({
-              id: `hierarchy-${d.parent}-${d.id}`,
-              from: d.parent,
-              to: d.id,
-              color: { color: '#4B5563' },
-              arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-            }))
+        ? buildHierarchyEdges(visDevices, visibleLinkEdges)
         : savedManualEdgesRef.current,
     );
     nodesRef.current = newNodes;

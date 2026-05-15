@@ -145,6 +145,72 @@ def test_build_all_devices_list_includes_parent_fields(sample_config: Path, monk
     assert by_id["ap-1"]["discovered"] is True
 
 
+def test_build_all_devices_list_infers_configured_link_parents(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
+
+    import main as main_module
+    from models import DeviceConfig, DeviceType, LinkConfig, Position
+
+    importlib.reload(main_module)
+
+    root = DeviceConfig(
+        name="LS",
+        host="10.0.0.1",
+        type=DeviceType.ROUTER,
+        position=Position(x=0, y=0),
+    )
+    crs317 = DeviceConfig(
+        name="CRS317-1G-16S",
+        host="10.0.88.17",
+        type=DeviceType.SWITCH,
+        position=Position(x=0, y=100),
+    )
+    crs326 = DeviceConfig(
+        name="CRS326-Gun-YB",
+        host="10.0.88.26",
+        type=DeviceType.SWITCH,
+        position=Position(x=0, y=200),
+    )
+    crs312 = DeviceConfig(
+        name="CRS312-4C+8XG",
+        host="10.0.88.13",
+        type=DeviceType.SWITCH,
+        position=Position(x=0, y=300),
+    )
+    hap = DeviceConfig(
+        name="hAP_ax^2_Thai",
+        host="10.0.0.39",
+        type=DeviceType.ROUTER,
+        position=Position(x=0, y=400),
+    )
+
+    links = [
+        LinkConfig(**{"from": "LS:sfp-sfpplus1", "to": "CRS317-1G-16S:auto"}),
+        LinkConfig(**{"from": "CRS317-1G-16S:sfp-sfpplus8", "to": "CRS326-Gun-YB:sfp-sfpplus1"}),
+        LinkConfig(**{"from": "CRS326-Gun-YB:ether22", "to": "CRS312-4C+8XG:combo2"}),
+        LinkConfig(**{"from": "CRS312-4C+8XG:ether4", "to": "hAP_ax^2_Thai:ether2-3BB"}),
+    ]
+
+    main_module.app_state["config"] = SimpleNamespace(
+        devices=[root, crs317, crs326, crs312, hap],
+        links=links,
+    )
+    main_module.app_state["topology_discovery"] = None
+    main_module.app_state["custom_positions"] = {}
+    main_module.app_state["device_maps"] = {}
+    main_module.app_state["pinned_devices"] = []
+    main_module.app_state["visibility_manager"] = None
+
+    devices = main_module._build_all_devices_list()
+    by_id = {d["id"]: d for d in devices}
+
+    assert by_id["LS"]["parent"] is None
+    assert by_id["CRS317-1G-16S"]["parent"] == "LS"
+    assert by_id["CRS326-Gun-YB"]["parent"] == "CRS317-1G-16S"
+    assert by_id["CRS312-4C+8XG"]["parent"] == "CRS326-Gun-YB"
+    assert by_id["hAP_ax^2_Thai"]["parent"] == "CRS312-4C+8XG"
+
+
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 

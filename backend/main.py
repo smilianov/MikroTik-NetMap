@@ -233,6 +233,32 @@ def _get_all_map_names() -> set[str]:
     return names
 
 
+def _endpoint_device(endpoint: str) -> str:
+    """Return the device part from a link endpoint like ``device:interface``."""
+    return str(endpoint or "").split(":", 1)[0].strip()
+
+
+def _configured_parent_map() -> dict[str, str]:
+    """Infer configured hierarchy from directed config links.
+
+    NetMap links are authored as upstream -> downstream. The UI hierarchy needs
+    a parent field per node, so derive that from the same links instead of
+    relying only on live discovery state.
+    """
+    cfg = app_state.get("config")
+    if not cfg:
+        return {}
+
+    parents: dict[str, str] = {}
+    for link in getattr(cfg, "links", []):
+        parent = _endpoint_device(link.from_device)
+        child = _endpoint_device(link.to_device)
+        if not parent or not child or parent == child:
+            continue
+        parents.setdefault(child, parent)
+    return parents
+
+
 def _build_all_devices_list() -> list[dict[str, Any]]:
     """Build the combined device list (config + discovered) for WebSocket."""
     cfg = app_state.get("config")
@@ -248,6 +274,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
     # mutates cfg.devices via shared reference, so cfg.devices may contain
     # discovered devices too).
     discovered_map = discovery.discovered_devices if discovery else {}
+    configured_parents = _configured_parent_map()
 
     devices = []
     for d in cfg.devices:
@@ -263,7 +290,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
             "profile": d.profile,
             "map": device_maps.get(d.name, d.map),
             "position": pos,
-            "parent": dd.discovered_by if dd else None,
+            "parent": configured_parents.get(d.name) or (dd.discovered_by if dd else None),
         }
         if dd:
             entry["discovered"] = True

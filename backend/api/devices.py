@@ -17,6 +17,20 @@ def set_app_state(state: dict[str, Any]) -> None:
     _app_state = state
 
 
+def _endpoint_device(endpoint: str) -> str:
+    return str(endpoint or "").split(":", 1)[0].strip()
+
+
+def _configured_parent_map(config: Any) -> dict[str, str]:
+    parents: dict[str, str] = {}
+    for link in getattr(config, "links", []):
+        parent = _endpoint_device(link.from_device)
+        child = _endpoint_device(link.to_device)
+        if parent and child and parent != child:
+            parents.setdefault(child, parent)
+    return parents
+
+
 @router.get("")
 async def list_devices() -> list[dict[str, Any]]:
     """Return all devices with their current ping state."""
@@ -25,6 +39,7 @@ async def list_devices() -> list[dict[str, Any]]:
     if not config:
         return []
 
+    parent_map = _configured_parent_map(config)
     result = []
     for dev in config.devices:
         state = ping_monitor.states.get(dev.name) if ping_monitor else None
@@ -36,6 +51,7 @@ async def list_devices() -> list[dict[str, Any]]:
             "profile": dev.profile,
             "map": dev.map,
             "position": {"x": dev.position.x, "y": dev.position.y},
+            "parent": parent_map.get(dev.name),
             "ping": {
                 "last_seen": state.last_seen.isoformat() if state and state.last_seen else None,
                 "rtt_ms": state.rtt_ms if state else None,
@@ -53,6 +69,7 @@ async def get_device(device_id: str) -> dict[str, Any]:
     if not config:
         raise HTTPException(404, "No config loaded")
 
+    parent_map = _configured_parent_map(config)
     for dev in config.devices:
         if dev.name == device_id:
             state = ping_monitor.states.get(dev.name) if ping_monitor else None
@@ -64,6 +81,7 @@ async def get_device(device_id: str) -> dict[str, Any]:
                 "profile": dev.profile,
                 "map": dev.map,
                 "position": {"x": dev.position.x, "y": dev.position.y},
+                "parent": parent_map.get(dev.name),
                 "ping": {
                     "last_seen": state.last_seen.isoformat() if state and state.last_seen else None,
                     "rtt_ms": state.rtt_ms if state else None,
