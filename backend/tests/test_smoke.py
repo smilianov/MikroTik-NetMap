@@ -296,8 +296,8 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
     sw2 = DeviceConfig(name="SW2", host="10.0.0.3", type=DeviceType.SWITCH, position=Position())
 
     physical = DiscoveredLink(
-        id="LS:sfp1-SW1:auto",
-        from_device="LS:bridge1/sfp-sfpplus1-uplink",
+        id="LS:sfp-sfpplus1-SW1:auto",
+        from_device="LS:sfp-sfpplus1-uplink",
         to_device="SW1:auto",
         first_seen=now,
         last_seen=now,
@@ -317,6 +317,13 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
         first_seen=now,
         last_seen=now,
     )
+    bridge_path = DiscoveredLink(
+        id="SW1:bridge-sfp-SW2:auto",
+        from_device="SW1:bridge1/sfp-sfpplus24",
+        to_device="SW2:auto",
+        first_seen=now,
+        last_seen=now,
+    )
 
     main_module.app_state["config"] = SimpleNamespace(
         devices=[root, sw1, sw2],
@@ -332,6 +339,7 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
             physical.id: physical,
             mgmt_mesh.id: mgmt_mesh,
             vpn_remote.id: vpn_remote,
+            bridge_path.id: bridge_path,
         },
     )
     main_module.app_state["device_maps"] = {}
@@ -341,7 +349,7 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
     discovered = [link for link in links if link.get("discovered")]
 
     assert discovered == [{
-        "from": "LS:bridge1/sfp-sfpplus1-uplink",
+        "from": "LS:sfp-sfpplus1-uplink",
         "to": "SW1:auto",
         "speed": 1000,
         "type": "wired",

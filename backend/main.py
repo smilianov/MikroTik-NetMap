@@ -323,12 +323,13 @@ def _interface_leaf(interface: str) -> str:
 
 
 def _is_physical_discovery_interface(interface: str) -> bool:
+    full = interface.strip().lower()
     leaf = _interface_leaf(interface)
     if not leaf or leaf == "auto":
         return True
-    if any(pattern in leaf for pattern in _DISCOVERY_TUNNEL_PATTERNS):
+    if any(pattern in full for pattern in _DISCOVERY_VIRTUAL_PATTERNS):
         return False
-    if any(pattern in leaf for pattern in _DISCOVERY_VIRTUAL_PATTERNS):
+    if any(pattern in leaf for pattern in _DISCOVERY_TUNNEL_PATTERNS):
         return False
     return leaf.startswith(_DISCOVERY_PHYSICAL_PREFIXES)
 
