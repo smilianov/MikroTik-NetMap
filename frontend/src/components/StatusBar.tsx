@@ -4,11 +4,12 @@
 
 import { useNetworkStore } from '../stores/networkStore';
 import { useAuthStore } from '../stores/authStore';
+import { devicesForMap } from '../utils/mapVisibility';
 
 export function StatusBar() {
-  const { devices, pingData, thresholds, hiddenDevices, currentMap, maps } = useNetworkStore();
+  const { devices, links, pingData, thresholds, hiddenDevices, currentMap, maps } = useNetworkStore();
   const { authEnabled, username, logout } = useAuthStore();
-  const mapDevices = devices.filter((d) => d.map === currentMap);
+  const mapDevices = devicesForMap(devices, links, currentMap, hiddenDevices);
   const hiddenCount = mapDevices.filter((d) => hiddenDevices.has(d.id)).length;
   const mapLabel = maps.find((m) => m.name === currentMap)?.label || currentMap;
 

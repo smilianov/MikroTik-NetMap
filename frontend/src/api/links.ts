@@ -12,6 +12,7 @@ export interface ManualLink {
   to: string;
   speed: number;
   type: string;
+  map?: string;
 }
 
 export async function getManualLinks(): Promise<ManualLink[]> {
@@ -24,6 +25,7 @@ export async function createLink(
   toDevice: string,
   speed: number = 1000,
   type: string = 'wired',
+  map?: string,
 ): Promise<ManualLink> {
   const res = await fetch(API_BASE, {
     method: 'POST',
@@ -33,6 +35,7 @@ export async function createLink(
       to_device: toDevice,
       speed,
       type,
+      map,
     }),
   });
   return res.json();

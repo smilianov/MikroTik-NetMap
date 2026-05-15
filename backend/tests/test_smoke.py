@@ -71,6 +71,7 @@ def test_config_loader_parses_minimal_file(sample_config: Path):
     assert cfg.host == "127.0.0.1"
     assert cfg.port == 8585
     assert cfg.discovery_enabled is False
+    assert cfg.discovery_map == "discovery"
     assert cfg.traffic_enabled is False
     assert len(cfg.devices) == 0
 
@@ -211,6 +212,76 @@ def test_build_all_devices_list_infers_configured_link_parents(sample_config: Pa
     assert by_id["hAP_ax^2_Thai"]["parent"] == "CRS312-4C+8XG"
 
 
+def test_discovery_map_keeps_auto_layer_separate(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
+
+    import main as main_module
+    from models import DeviceConfig, DeviceType, DiscoveredDevice, DiscoveredLink, LinkConfig, Position
+
+    importlib.reload(main_module)
+
+    now = datetime.now(timezone.utc)
+    root = DeviceConfig(
+        name="LS",
+        host="10.0.0.1",
+        type=DeviceType.ROUTER,
+        map="main",
+        position=Position(x=0, y=0),
+    )
+    child = DeviceConfig(
+        name="SW1",
+        host="10.0.0.2",
+        type=DeviceType.SWITCH,
+        map="main",
+        position=Position(x=0, y=100),
+    )
+    discovered = DiscoveredDevice(
+        name="AP1",
+        host="10.0.0.3",
+        discovered_by="SW1",
+        discovered_on="ether3",
+        first_seen=now,
+        last_seen=now,
+        position=Position(x=0, y=200),
+    )
+    discovered_link = DiscoveredLink(
+        id="SW1:ether3-AP1:auto",
+        from_device="SW1:ether3",
+        to_device="AP1:auto",
+        first_seen=now,
+        last_seen=now,
+    )
+
+    main_module.app_state["config"] = SimpleNamespace(
+        devices=[root, child],
+        maps=[SimpleNamespace(name="main", label="Manual", parent=None, background=None)],
+        links=[LinkConfig(**{"from": "LS:ether1", "to": "SW1:ether1"})],
+        discovery_enabled=True,
+        discovery_map="auto",
+        discovery_map_label="Auto Discovery",
+    )
+    main_module.app_state["topology_discovery"] = SimpleNamespace(
+        discovered_devices={"AP1": discovered},
+        discovered_links={discovered_link.id: discovered_link},
+    )
+    main_module.app_state["custom_positions"] = {}
+    main_module.app_state["device_maps"] = {}
+    main_module.app_state["pinned_devices"] = []
+    main_module.app_state["visibility_manager"] = None
+    main_module.app_state["manual_link_manager"] = None
+    main_module.app_state["custom_maps"] = []
+    main_module.app_state["map_labels"] = {}
+
+    maps = main_module._get_maps_list()
+    devices = main_module._build_all_devices_list()
+    links = main_module._build_all_links_list()
+
+    assert [m["name"] for m in maps] == ["main", "auto"]
+    assert {d["id"]: d["map"] for d in devices}["AP1"] == "auto"
+    assert links[0]["map"] == "main"
+    assert links[1]["map"] == "auto"
+
+
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 
@@ -265,5 +336,6 @@ def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch:
     payload = sent_messages[0]
     assert payload["type"] == "topology_update"
     assert payload["added_devices"][0]["parent"] == "r1"
+    assert payload["added_devices"][0]["map"] == "discovery"
     assert payload["updated_devices"][0]["id"] == "ap-1"
     assert payload["updated_devices"][0]["parent"] == "sw1"

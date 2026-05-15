@@ -203,6 +203,7 @@ def _get_maps_list() -> list[dict[str, Any]]:
     if not cfg:
         return []
     map_labels = app_state.get("map_labels", {})
+    seen: set[str] = set()
     result = [
         {
             "name": m.name,
@@ -212,15 +213,30 @@ def _get_maps_list() -> list[dict[str, Any]]:
         }
         for m in cfg.maps
     ]
+    seen.update(m["name"] for m in result)
+
+    discovery_map = _discovery_map_name()
+    if getattr(cfg, "discovery_enabled", False) and discovery_map not in seen:
+        result.append({
+            "name": discovery_map,
+            "label": map_labels.get(discovery_map, _discovery_map_label()),
+            "parent": None,
+            "background": None,
+        })
+        seen.add(discovery_map)
+
     # Append custom maps (user-created from UI).
     for cm in app_state.get("custom_maps", []):
         name = cm["name"]
+        if name in seen:
+            continue
         result.append({
             "name": name,
             "label": map_labels.get(name, cm.get("label", name)),
             "parent": None,
             "background": None,
         })
+        seen.add(name)
     return result
 
 
@@ -228,6 +244,8 @@ def _get_all_map_names() -> set[str]:
     """Get all valid map names (config + custom)."""
     cfg = app_state.get("config")
     names = {m.name for m in cfg.maps} if cfg else set()
+    if cfg and getattr(cfg, "discovery_enabled", False):
+        names.add(_discovery_map_name())
     for cm in app_state.get("custom_maps", []):
         names.add(cm["name"])
     return names
@@ -236,6 +254,33 @@ def _get_all_map_names() -> set[str]:
 def _endpoint_device(endpoint: str) -> str:
     """Return the device part from a link endpoint like ``device:interface``."""
     return str(endpoint or "").split(":", 1)[0].strip()
+
+
+def _discovery_map_name() -> str:
+    cfg = app_state.get("config")
+    name = getattr(cfg, "discovery_map", "discovery") if cfg else "discovery"
+    return str(name or "discovery")
+
+
+def _discovery_map_label() -> str:
+    cfg = app_state.get("config")
+    label = getattr(cfg, "discovery_map_label", "Auto Discovery") if cfg else "Auto Discovery"
+    return str(label or "Auto Discovery")
+
+
+def _configured_device_maps() -> dict[str, str]:
+    cfg = app_state.get("config")
+    overrides = app_state.get("device_maps", {})
+    if not cfg:
+        return {}
+    return {d.name: overrides.get(d.name, d.map) for d in cfg.devices}
+
+
+def _configured_link_map(from_endpoint: str, to_endpoint: str) -> str:
+    device_maps = _configured_device_maps()
+    from_map = device_maps.get(_endpoint_device(from_endpoint), "main")
+    to_map = device_maps.get(_endpoint_device(to_endpoint), from_map)
+    return from_map if from_map == to_map else from_map
 
 
 def _configured_parent_map() -> dict[str, str]:
@@ -312,7 +357,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
                 "host": dd.host,
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
-                "map": device_maps.get(dd.name, "main"),
+                "map": device_maps.get(dd.name, _discovery_map_name()),
                 "position": pos,
                 "discovered": True,
                 "parent": dd.discovered_by,
@@ -335,6 +380,7 @@ def _build_all_links_list() -> list[dict[str, Any]]:
             "to": ln.to_device,
             "speed": ln.speed,
             "type": ln.type.value,
+            "map": _configured_link_map(ln.from_device, ln.to_device),
         }
         for ln in cfg.links
     ]
@@ -348,6 +394,7 @@ def _build_all_links_list() -> list[dict[str, Any]]:
                 "type": dl.type.value,
                 "discovered": True,
                 "confirmed": dl.confirmed,
+                "map": _discovery_map_name(),
             })
 
     # Include manual links.
@@ -360,6 +407,7 @@ def _build_all_links_list() -> list[dict[str, Any]]:
                 "speed": ml.get("speed", 1000),
                 "type": ml.get("type", "wired"),
                 "manual": True,
+                "map": ml.get("map", _configured_link_map(ml["from"], ml["to"])),
             })
 
     return links
@@ -433,7 +481,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "host": dd.host,
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
-                "map": app_state.get("device_maps", {}).get(dd.name, "main"),
+                "map": app_state.get("device_maps", {}).get(dd.name, _discovery_map_name()),
                 "position": {"x": dd.position.x, "y": dd.position.y},
                 "discovered": True,
                 "parent": dd.discovered_by,
@@ -447,7 +495,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "host": dd.host,
                 "type": _infer_type_str(dd.board, dd.platform),
                 "profile": "edge",
-                "map": app_state.get("device_maps", {}).get(dd.name, "main"),
+                "map": app_state.get("device_maps", {}).get(dd.name, _discovery_map_name()),
                 "position": {"x": dd.position.x, "y": dd.position.y},
                 "discovered": True,
                 "parent": dd.discovered_by,
@@ -462,6 +510,7 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 "type": dl.type.value,
                 "discovered": True,
                 "confirmed": dl.confirmed,
+                "map": _discovery_map_name(),
             }
             for dl in added_links
         ],

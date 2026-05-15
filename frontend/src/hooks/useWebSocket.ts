@@ -97,6 +97,8 @@ export function useWebSocket() {
               type: l.type,
               confirmed: l.confirmed,
               manual: l.manual,
+              discovered: l.discovered,
+              map: l.map,
             })),
             (msg.thresholds || []).map((t: any) => ({
               maxSeconds: t.max_seconds,
@@ -145,6 +147,8 @@ export function useWebSocket() {
               type: l.type,
               confirmed: l.confirmed,
               manual: l.manual,
+              discovered: l.discovered,
+              map: l.map,
             })),
             msg.removed_links || [],
             msg.removed_devices || [],

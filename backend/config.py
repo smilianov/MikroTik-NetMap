@@ -115,6 +115,8 @@ class NetMapConfig:
         self.discovery_auto_add_links: bool = discovery.get("auto_add_links", True)
         self.discovery_auto_add_devices: bool = discovery.get("auto_add_devices", False)
         self.discovery_protocols: list[str] = discovery.get("protocols", ["mndp", "lldp"])
+        self.discovery_map: str = discovery.get("map", "discovery")
+        self.discovery_map_label: str = discovery.get("map_label", "Auto Discovery")
 
         # Traffic monitor settings.
         traffic = data.get("traffic", {})

@@ -105,5 +105,7 @@ discovery:
   enabled: true          # enable MNDP/LLDP neighbor discovery
   interval: 300          # re-discover every N seconds (default: 300 = 5 min)
   protocols: [mndp, lldp]  # neighbor protocols (informational — RouterOS reports all)
+  map: discovery         # map tab where discovered devices/links are shown
+  map_label: Auto Discovery
   auto_add_devices: false   # if true, unknown neighbors are added to the map
   auto_add_links: true      # if true, discovered links appear on the map

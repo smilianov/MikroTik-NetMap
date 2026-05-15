@@ -32,6 +32,8 @@ export interface LinkInfo {
   type: string;
   confirmed?: boolean;
   manual?: boolean;
+  discovered?: boolean;
+  map?: string;
 }
 
 export interface MapInfo {

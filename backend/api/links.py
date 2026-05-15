@@ -24,6 +24,7 @@ class CreateLinkBody(BaseModel):
     to_device: str  # "deviceB:interface"
     speed: int = 1000
     type: str = "wired"
+    map: str | None = None
 
 
 class UpdateLinkBody(BaseModel):
@@ -71,6 +72,7 @@ async def create_link(body: CreateLinkBody):
         to_device=body.to_device,
         speed=body.speed,
         link_type=body.type,
+        map_name=body.map,
     )
 
     # Broadcast the new link.
@@ -80,6 +82,7 @@ async def create_link(body: CreateLinkBody):
         "speed": link["speed"],
         "type": link["type"],
         "manual": True,
+        "map": link.get("map"),
     }])
 
     return link
@@ -115,6 +118,7 @@ async def update_link(link_id: str, body: UpdateLinkBody):
             "speed": result["speed"],
             "type": result["type"],
             "manual": True,
+            "map": result.get("map"),
         }],
     )
 

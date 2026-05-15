@@ -12,6 +12,7 @@ import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
 import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
 import { sendWsMessage } from '../hooks/useWebSocket';
 import { formatBandwidth } from '../utils/formatters';
+import { devicesForMap, endpointDevice, linksForMap } from '../utils/mapVisibility';
 import { ContextMenu } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { LinkDialog } from './LinkDialog';
@@ -31,10 +32,6 @@ function linkWidth(speed: number): number {
   if (speed >= 10000) return 4;
   if (speed >= 1000) return 2.5;
   return 1.5;
-}
-
-function endpointDevice(endpoint: string): string {
-  return endpoint.split(':')[0] || endpoint;
 }
 
 function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
@@ -454,7 +451,7 @@ export function NetworkMap() {
     // (not from stale DataSet) so tab switches show the correct devices.
     const curMap = currentMapRef.current;
     const curHidden = hiddenDevicesRef.current;
-    const visDevices = devicesRef.current.filter((d) => !curHidden.has(d.id) && (d.map === curMap || d.pinned));
+    const visDevices = devicesForMap(devicesRef.current, linksRef.current, curMap, curHidden);
     const visIds = new Set(visDevices.map((d) => d.id));
 
     // Create fresh DataSets.
@@ -478,11 +475,8 @@ export function NetworkMap() {
             return dev ? { ...n, x: dev.position.x, y: dev.position.y } : n;
           }),
     );
-    const visibleLinkEdges = linksRef.current.filter((link) => {
-      const fromDev = endpointDevice(link.from);
-      const toDev = endpointDevice(link.to);
-      return visIds.has(fromDev) && visIds.has(toDev);
-    });
+    const visibleLinkEdges = linksForMap(linksRef.current, devicesRef.current, curMap, curHidden)
+      .filter((link) => visIds.has(endpointDevice(link.from)) && visIds.has(endpointDevice(link.to)));
 
     // In hierarchical mode, build parent→child edges from the `parent` field,
     // falling back to directed topology links when parent metadata is absent.
@@ -658,7 +652,7 @@ export function NetworkMap() {
     if (hierarchicalRef.current) return;
     const nodes = nodesRef.current;
     const existingIds = new Set(nodes.getIds());
-    const visibleDevices = devices.filter((d) => !hiddenDevices.has(d.id) && (d.map === currentMap || d.pinned));
+    const visibleDevices = devicesForMap(devices, links, currentMap, hiddenDevices);
     const configIds = new Set(visibleDevices.map((d) => d.id));
 
     for (const dev of visibleDevices) {
@@ -718,7 +712,7 @@ export function NetworkMap() {
     // after we overwrote labels here.
     lastNodeLabelsRef.current.clear();
     lastNodeImagesRef.current.clear();
-  }, [devices, pingData, thresholds, hiddenDevices, currentMap]);
+  }, [devices, links, pingData, thresholds, hiddenDevices, currentMap]);
 
   // Sync links → vis edges (incremental, filter hidden device links).
   // Skip in hierarchical mode — DataSet mutations restart layout computation.
@@ -729,15 +723,7 @@ export function NetworkMap() {
     const newIds = new Set<string>();
 
     // Filter out links where either endpoint is hidden or not on the current map.
-    const currentMapDeviceIds = new Set(
-      devices.filter((d) => (d.map === currentMap || d.pinned)).map((d) => d.id),
-    );
-    const visibleLinks = links.filter((l) => {
-      const fromDev = l.from.split(':')[0];
-      const toDev = l.to.split(':')[0];
-      return !hiddenDevices.has(fromDev) && !hiddenDevices.has(toDev)
-        && currentMapDeviceIds.has(fromDev) && currentMapDeviceIds.has(toDev);
-    });
+    const visibleLinks = linksForMap(links, devices, currentMap, hiddenDevices);
 
     for (const link of visibleLinks) {
       const edgeId = `${link.from}-${link.to}`;
@@ -1352,7 +1338,7 @@ export function NetworkMap() {
           onConfirm={async (data) => {
             const from = `${linkDialog.from}:${data.fromIf}`;
             const to = `${linkDialog.to}:${data.toIf}`;
-            await apiCreateLink(from, to, data.speed, data.type);
+            await apiCreateLink(from, to, data.speed, data.type, currentMapRef.current);
             setLinkDialog(null);
           }}
         />

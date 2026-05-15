@@ -68,6 +68,7 @@ class ManualLinkManager:
         to_device: str,
         speed: int = 1000,
         link_type: str = "wired",
+        map_name: str | None = None,
     ) -> dict[str, Any]:
         link_id = _make_link_id(from_device, to_device)
         link = {
@@ -77,6 +78,8 @@ class ManualLinkManager:
             "speed": speed,
             "type": link_type,
         }
+        if map_name:
+            link["map"] = map_name
         self._links[link_id] = link
         await self._save()
         logger.info("Created manual link: %s", link_id)
