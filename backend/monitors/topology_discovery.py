@@ -687,7 +687,7 @@ class TopologyDiscovery:
         one_way_links = 0
         one_way_port_hint_links = 0
         one_way_ignored_on_confirmed_port = 0
-        one_way_ignored_not_direct = 0
+        one_way_ignored_ambiguous = 0
         hint_mismatches = 0
         non_physical_links = 0
 
@@ -744,6 +744,7 @@ class TopologyDiscovery:
             confirmed_local_ports.add((local_dev, local_if))
             confirmed_local_ports.add((remote_id, remote_if))
 
+        one_way_by_local_port: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for hl in one_way_candidates:
             local_dev = hl["local_device"]
             remote_id = hl["remote_identity"] or hl.get("remote_mac") or hl.get("remote_address", "")
@@ -763,10 +764,32 @@ class TopologyDiscovery:
                 one_way_ignored_on_confirmed_port += 1
                 continue
 
-            if parent_map.get(remote_id) != local_dev:
-                one_way_ignored_not_direct += 1
+            one_way_by_local_port.setdefault((local_dev, local_if), []).append(hl)
+
+        for (local_dev, local_if), candidates in one_way_by_local_port.items():
+            # If a bridge forwards multiple neighbor announcements through one
+            # physical port, exact port-to-port inference is ambiguous.  Keep a
+            # one-way link only when the local port has a single candidate, or
+            # exactly one switch/router candidate and the rest are endpoint/AP
+            # devices seen behind it.
+            selected: dict[str, Any] | None = None
+            if len(candidates) == 1:
+                selected = candidates[0]
+            else:
+                gateway_candidates = [
+                    candidate for candidate in candidates
+                    if _gateway_score(candidate.get("remote_board", "")) > 0
+                ]
+                if len(gateway_candidates) == 1:
+                    selected = gateway_candidates[0]
+
+            if selected is None:
+                one_way_ignored_ambiguous += len(candidates)
                 continue
 
+            hl = selected
+            remote_id = hl["remote_identity"] or hl.get("remote_mac") or hl.get("remote_address", "")
+            remote_if = hl.get("remote_interface_hint", "")
             remote_known = (
                 remote_id in self._configured_names
                 or remote_id in self.discovered_devices
@@ -876,7 +899,7 @@ class TopologyDiscovery:
         logger.info(
             "Discovery sweep: %d half-links, %d links (%d unconfirmed from port hints, "
             "%d one-way candidates, %d one-way ignored on confirmed ports, "
-            "%d one-way ignored as not direct, %d non-physical ignored, "
+            "%d one-way ignored as ambiguous, %d non-physical ignored, "
             "%d hint mismatches ignored, %d new, %d removed), %d new devices, "
             "%d queryable devices, %d devices with speed data",
             len(all_half_links),
@@ -884,7 +907,7 @@ class TopologyDiscovery:
             one_way_port_hint_links,
             one_way_links,
             one_way_ignored_on_confirmed_port,
-            one_way_ignored_not_direct,
+            one_way_ignored_ambiguous,
             non_physical_links,
             hint_mismatches,
             len(added_links),

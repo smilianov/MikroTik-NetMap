@@ -686,6 +686,63 @@ def test_topology_discovery_does_not_add_one_way_hints_on_confirmed_ports(
     assert "CRS317-1G-16S" not in str(discovery.discovered_links)
 
 
+def test_topology_discovery_ignores_ambiguous_one_way_switch_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from models import DeviceConfig, DeviceType, Position
+    from monitors import topology_discovery as td
+
+    monkeypatch.setattr(td, "PERSISTENCE_FILE", tmp_path / "discovered_topology.json")
+
+    ls = DeviceConfig(name="LS", host="10.0.0.1", type=DeviceType.ROUTER, position=Position())
+    crs226 = DeviceConfig(name="CRS226-02", host="10.0.88.227", type=DeviceType.SWITCH, position=Position())
+    crs317 = DeviceConfig(name="CRS317-1G-16S", host="10.0.88.17", type=DeviceType.SWITCH, position=Position())
+    discovery = td.TopologyDiscovery(
+        devices=[ls, crs226, crs317],
+        auto_add_devices=False,
+        auto_add_links=True,
+        api_defaults={"username": "prometheus", "password": "test", "api_type": "classic"},
+    )
+
+    async def _fake_query(device: DeviceConfig) -> dict:
+        if device.name == "LS":
+            return {
+                "device_name": "LS",
+                "neighbors": [
+                    {
+                        "local_device": "LS",
+                        "local_interface": "sfp-sfpplus1",
+                        "remote_interface_hint": "sfp-sfpplus1-uplink",
+                        "remote_identity": "CRS226-02",
+                        "remote_address": "10.0.88.227",
+                        "remote_mac": "",
+                        "remote_platform": "MikroTik",
+                        "remote_board": "CRS226-24G-2S+",
+                    },
+                    {
+                        "local_device": "LS",
+                        "local_interface": "sfp-sfpplus1",
+                        "remote_interface_hint": "sfp-sfpplus1-trunk-uplink",
+                        "remote_identity": "CRS317-1G-16S",
+                        "remote_address": "10.0.88.17",
+                        "remote_mac": "",
+                        "remote_platform": "MikroTik",
+                        "remote_board": "CRS317-1G-16S+",
+                    },
+                ],
+                "interfaces": [{"name": "sfp-sfpplus1", "type": "sfp-sfpplus"}],
+            }
+        return {"device_name": device.name, "neighbors": [], "interfaces": []}
+
+    discovery._query_device = _fake_query
+
+    changes = asyncio.run(discovery._sweep())
+
+    assert changes["added_links"] == []
+    assert discovery.discovered_links == {}
+
+
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 
