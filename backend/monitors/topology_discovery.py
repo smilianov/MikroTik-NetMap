@@ -676,11 +676,18 @@ class TopologyDiscovery:
             ):
                 new_device_candidates[remote_id] = hl
 
-        # Build full links only from reciprocal neighbor observations.
-        # One-sided /ip/neighbor data is useful as a candidate, but it is not
-        # strong enough to create an exact port-to-port topology edge.
+        # Build full links from reciprocal neighbor observations first.  When
+        # a device cannot be queried but another device reports a physical
+        # remote port via CDP/LLDP, add a dashed unconfirmed link only if the
+        # hierarchy inference says it is the direct neighbor and the local port
+        # is not already occupied by a confirmed reciprocal link.
         new_links: dict[str, DiscoveredLink] = {}
+        confirmed_local_ports: set[tuple[str, str]] = set()
+        one_way_candidates: list[dict[str, Any]] = []
         one_way_links = 0
+        one_way_port_hint_links = 0
+        one_way_ignored_on_confirmed_port = 0
+        one_way_ignored_not_direct = 0
         hint_mismatches = 0
         non_physical_links = 0
 
@@ -691,6 +698,7 @@ class TopologyDiscovery:
             reverse_key = (remote_id, local_dev)
             reverse_hl = by_local_remote.get(reverse_key)
             if not reverse_hl:
+                one_way_candidates.append(hl)
                 one_way_links += 1
                 continue
 
@@ -733,6 +741,69 @@ class TopologyDiscovery:
                 first_seen=first_seen,
                 last_seen=now,
             )
+            confirmed_local_ports.add((local_dev, local_if))
+            confirmed_local_ports.add((remote_id, remote_if))
+
+        for hl in one_way_candidates:
+            local_dev = hl["local_device"]
+            remote_id = hl["remote_identity"] or hl.get("remote_mac") or hl.get("remote_address", "")
+            if not remote_id:
+                continue
+
+            local_if = hl["local_interface"]
+            remote_if = hl.get("remote_interface_hint", "")
+            if not (
+                _is_physical_neighbor_interface(local_if)
+                and _is_physical_neighbor_interface(remote_if)
+            ):
+                non_physical_links += 1
+                continue
+
+            if (local_dev, local_if) in confirmed_local_ports:
+                one_way_ignored_on_confirmed_port += 1
+                continue
+
+            if parent_map.get(remote_id) != local_dev:
+                one_way_ignored_not_direct += 1
+                continue
+
+            remote_known = (
+                remote_id in self._configured_names
+                or remote_id in self.discovered_devices
+                or (self.auto_add_devices and remote_id in new_device_candidates)
+            )
+            if not remote_known:
+                continue
+
+            link_id = _make_link_id(local_dev, local_if, remote_id, remote_if)
+            if link_id in new_links:
+                continue
+
+            link_type = _infer_link_type(local_if)
+            existing = self.discovered_links.get(link_id)
+            first_seen = existing.first_seen if existing else now
+
+            local_speed = self.interface_speeds.get(local_dev, {}).get(local_if, 0)
+            remote_speed = self.interface_speeds.get(remote_id, {}).get(remote_if, 0)
+            link_speed = (
+                local_speed
+                or remote_speed
+                or _infer_interface_speed(local_if)
+                or _infer_interface_speed(remote_if)
+                or 1000
+            )
+
+            new_links[link_id] = DiscoveredLink(
+                id=link_id,
+                from_device=f"{local_dev}:{local_if}",
+                to_device=f"{remote_id}:{remote_if}",
+                speed=link_speed,
+                type=link_type,
+                confirmed=False,
+                first_seen=first_seen,
+                last_seen=now,
+            )
+            one_way_port_hint_links += 1
 
         # Detect changes.
         old_link_ids = set(self.discovered_links.keys())
@@ -803,12 +874,17 @@ class TopologyDiscovery:
         removed_links = list(removed_link_ids)
 
         logger.info(
-            "Discovery sweep: %d half-links, %d confirmed links (%d one-way ignored, "
-            "%d non-physical ignored, %d hint mismatches ignored, %d new, "
-            "%d removed), %d new devices, %d queryable devices, %d devices with speed data",
+            "Discovery sweep: %d half-links, %d links (%d unconfirmed from port hints, "
+            "%d one-way candidates, %d one-way ignored on confirmed ports, "
+            "%d one-way ignored as not direct, %d non-physical ignored, "
+            "%d hint mismatches ignored, %d new, %d removed), %d new devices, "
+            "%d queryable devices, %d devices with speed data",
             len(all_half_links),
             len(new_links),
+            one_way_port_hint_links,
             one_way_links,
+            one_way_ignored_on_confirmed_port,
+            one_way_ignored_not_direct,
             non_physical_links,
             hint_mismatches,
             len(added_links),

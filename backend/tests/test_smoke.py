@@ -554,6 +554,138 @@ def test_topology_discovery_creates_only_bidirectional_neighbor_links(
     assert "UAP-HD" not in str(discovery.discovered_links)
 
 
+def test_topology_discovery_uses_one_way_port_hints_for_known_devices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from models import DeviceConfig, DeviceType, Position
+    from monitors import topology_discovery as td
+
+    monkeypatch.setattr(td, "PERSISTENCE_FILE", tmp_path / "discovered_topology.json")
+
+    ls = DeviceConfig(
+        name="LS",
+        host="10.0.0.1",
+        type=DeviceType.ROUTER,
+        position=Position(),
+    )
+    crs317 = DeviceConfig(
+        name="CRS317-1G-16S",
+        host="10.0.88.17",
+        type=DeviceType.SWITCH,
+        position=Position(),
+    )
+    discovery = td.TopologyDiscovery(
+        devices=[ls, crs317],
+        auto_add_devices=False,
+        auto_add_links=True,
+        api_defaults={"username": "prometheus", "password": "test", "api_type": "classic"},
+    )
+
+    async def _fake_query(device: DeviceConfig) -> dict:
+        if device.name == "LS":
+            return {
+                "device_name": "LS",
+                "neighbors": [{
+                    "local_device": "LS",
+                    "local_interface": "sfp-sfpplus1-to-CRS317",
+                    "remote_interface_hint": "sfp-sfpplus1-trunk-uplink",
+                    "remote_identity": "CRS317-1G-16S",
+                    "remote_address": "10.0.88.17",
+                    "remote_mac": "",
+                    "remote_platform": "MikroTik",
+                    "remote_board": "CRS317-1G-16S+",
+                }],
+                "interfaces": [{"name": "sfp-sfpplus1-to-CRS317", "type": "sfp-sfpplus"}],
+            }
+        return {"device_name": device.name, "neighbors": [], "interfaces": []}
+
+    discovery._query_device = _fake_query
+
+    changes = asyncio.run(discovery._sweep())
+
+    assert len(changes["added_links"]) == 1
+    link = changes["added_links"][0]
+    assert link.from_device == "LS:sfp-sfpplus1-to-CRS317"
+    assert link.to_device == "CRS317-1G-16S:sfp-sfpplus1-trunk-uplink"
+    assert link.confirmed is False
+    assert link.speed == 10000
+
+
+def test_topology_discovery_does_not_add_one_way_hints_on_confirmed_ports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from models import DeviceConfig, DeviceType, Position
+    from monitors import topology_discovery as td
+
+    monkeypatch.setattr(td, "PERSISTENCE_FILE", tmp_path / "discovered_topology.json")
+
+    ax2 = DeviceConfig(name="AX2", host="10.0.0.57", type=DeviceType.ROUTER, position=Position())
+    crs326 = DeviceConfig(name="CRS326-Gun-YB", host="10.0.88.26", type=DeviceType.SWITCH, position=Position())
+    crs317 = DeviceConfig(name="CRS317-1G-16S", host="10.0.88.17", type=DeviceType.SWITCH, position=Position())
+    discovery = td.TopologyDiscovery(
+        devices=[ax2, crs326, crs317],
+        auto_add_devices=False,
+        auto_add_links=True,
+        api_defaults={"username": "prometheus", "password": "test", "api_type": "classic"},
+    )
+
+    async def _fake_query(device: DeviceConfig) -> dict:
+        if device.name == "AX2":
+            return {
+                "device_name": "AX2",
+                "neighbors": [
+                    {
+                        "local_device": "AX2",
+                        "local_interface": "ether5",
+                        "remote_interface_hint": "ether22",
+                        "remote_identity": "CRS326-Gun-YB",
+                        "remote_address": "10.0.88.26",
+                        "remote_mac": "",
+                        "remote_platform": "MikroTik",
+                        "remote_board": "CRS326-24G-2S+",
+                    },
+                    {
+                        "local_device": "AX2",
+                        "local_interface": "ether5",
+                        "remote_interface_hint": "sfp-sfpplus8-gun-YB",
+                        "remote_identity": "CRS317-1G-16S",
+                        "remote_address": "10.0.88.17",
+                        "remote_mac": "",
+                        "remote_platform": "MikroTik",
+                        "remote_board": "CRS317-1G-16S+",
+                    },
+                ],
+                "interfaces": [{"name": "ether5", "speed": "1Gbps"}],
+            }
+        if device.name == "CRS326-Gun-YB":
+            return {
+                "device_name": "CRS326-Gun-YB",
+                "neighbors": [{
+                    "local_device": "CRS326-Gun-YB",
+                    "local_interface": "ether22",
+                    "remote_interface_hint": "ether5",
+                    "remote_identity": "AX2",
+                    "remote_address": "10.0.0.57",
+                    "remote_mac": "",
+                    "remote_platform": "MikroTik",
+                    "remote_board": "hAP ax^2",
+                }],
+                "interfaces": [{"name": "ether22", "speed": "1Gbps"}],
+            }
+        return {"device_name": device.name, "neighbors": [], "interfaces": []}
+
+    discovery._query_device = _fake_query
+
+    changes = asyncio.run(discovery._sweep())
+
+    assert len(changes["added_links"]) == 1
+    assert changes["added_links"][0].from_device == "AX2:ether5"
+    assert changes["added_links"][0].to_device == "CRS326-Gun-YB:ether22"
+    assert "CRS317-1G-16S" not in str(discovery.discovered_links)
+
+
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 
