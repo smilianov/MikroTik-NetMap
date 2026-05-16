@@ -87,6 +87,60 @@ def test_health_endpoint_smoke(client: TestClient):
     assert "auth_enabled" in payload
 
 
+def test_reload_config_endpoint_reloads_yaml(client: TestClient, sample_config: Path):
+    sample_config.write_text(
+        """
+server:
+  host: 127.0.0.1
+  port: 8585
+  cors_origins: ["*"]
+
+ping:
+  interval: 2
+  timeout: 1
+
+api_defaults:
+  username: prometheus
+  api_type: classic
+  port: 8728
+
+devices:
+  - name: LS
+    host: 127.0.0.1
+    type: router
+    position:
+      x: 0
+      y: 0
+maps:
+  - name: main
+    label: Network Overview
+links: []
+
+discovery:
+  enabled: false
+
+traffic:
+  enabled: false
+
+auth:
+  enabled: false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/config/reload")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["devices"] == 1
+    assert payload["links"] == 0
+
+    devices = client.get("/api/devices").json()
+    assert [d["id"] for d in devices] == ["LS"]
+
+
 def test_websocket_initial_ping_state_shape(client: TestClient):
     with client.websocket_connect("/ws") as ws:
         first = ws.receive_json()

@@ -605,6 +605,146 @@ async def _on_traffic_update(
     })
 
 
+def _config_payload() -> dict[str, Any]:
+    """Build the full client config payload from current app state."""
+    cfg = app_state.get("config")
+    visibility = app_state.get("visibility_manager")
+    if not cfg:
+        return {
+            "thresholds": [],
+            "maps": [],
+            "devices": [],
+            "links": [],
+            "hidden": [],
+            "blacklisted": [],
+        }
+
+    return {
+        "thresholds": [
+            {"max_seconds": t.max_seconds, "color": t.color, "label": t.label}
+            for t in cfg.thresholds
+        ],
+        "maps": _get_maps_list(),
+        "devices": _build_all_devices_list(),
+        "links": _build_all_links_list(),
+        "hidden": visibility.get_hidden_list() if visibility else [],
+        "blacklisted": [d.id for d in visibility.blacklisted.values()] if visibility else [],
+    }
+
+
+async def _stop_runtime_monitors() -> None:
+    """Stop currently running background monitors."""
+    for key in ("traffic_monitor", "topology_discovery", "ping_monitor"):
+        monitor = app_state.get(key)
+        if monitor:
+            await monitor.stop()
+        app_state[key] = None
+
+
+def _start_runtime_monitors(cfg: NetMapConfig) -> None:
+    """Start background monitors for the loaded config."""
+    visibility = app_state.get("visibility_manager")
+
+    ping = PingMonitor(
+        devices=cfg.devices,
+        interval=cfg.ping_interval,
+        timeout=cfg.ping_timeout,
+        on_update=_on_ping_update,
+    )
+    ping.start()
+    app_state["ping_monitor"] = ping
+
+    devices_with_creds = [d for d in cfg.devices if d.password or d.ssh_key_file]
+    has_default_creds = bool(cfg.api_defaults.get("password"))
+
+    discovery = None
+    if cfg.discovery_enabled and (devices_with_creds or has_default_creds):
+        discovery = TopologyDiscovery(
+            devices=cfg.devices,
+            interval=cfg.discovery_interval,
+            auto_add_devices=cfg.discovery_auto_add_devices,
+            auto_add_links=cfg.discovery_auto_add_links,
+            on_update=_on_topology_update,
+            visibility_manager=visibility,
+            api_defaults=cfg.api_defaults,
+        )
+        discovery.start()
+        if discovery.discovered_devices:
+            for dd in discovery.discovered_devices.values():
+                if visibility and visibility.is_blacklisted(dd.name):
+                    continue
+                ping.add_device(DeviceConfig(
+                    name=dd.name,
+                    host=dd.host,
+                    type=DeviceType(_infer_type_str(dd.board, dd.platform)),
+                    position=dd.position,
+                ))
+    app_state["topology_discovery"] = discovery
+
+    traffic = None
+    if cfg.traffic_enabled and (devices_with_creds or has_default_creds):
+        traffic = TrafficMonitor(
+            devices=cfg.devices,
+            interval=cfg.traffic_interval,
+            on_update=_on_traffic_update,
+            api_defaults=cfg.api_defaults,
+        )
+        if discovery and discovery.discovered_devices and has_default_creds:
+            for dd in discovery.discovered_devices.values():
+                if visibility and visibility.is_blacklisted(dd.name):
+                    continue
+                traffic.add_device(DeviceConfig(
+                    name=dd.name,
+                    host=dd.host,
+                    username=cfg.api_defaults.get("username", "admin"),
+                    password=cfg.api_defaults["password"],
+                    api_type=cfg.api_defaults.get("api_type", "rest"),
+                    port=cfg.api_defaults.get("port"),
+                ))
+        traffic.start()
+    app_state["traffic_monitor"] = traffic
+
+
+def _apply_auth_config(cfg: NetMapConfig) -> None:
+    """Refresh auth runtime state from config/env."""
+    app_state["auth_enabled"] = cfg.auth_enabled
+    if cfg.auth_enabled:
+        existing = app_state.get("session_manager")
+        expected_url = cfg.auth_grafana_url.rstrip("/")
+        if (
+            not existing
+            or existing.grafana_url != expected_url
+            or existing.session_ttl != cfg.auth_session_ttl
+        ):
+            app_state["session_manager"] = SessionManager(
+                grafana_url=cfg.auth_grafana_url,
+                session_ttl=cfg.auth_session_ttl,
+            )
+    else:
+        app_state.pop("session_manager", None)
+
+
+async def _prune_stale_map_state(cfg: NetMapConfig) -> None:
+    """Remove stale UI overrides for devices no longer in config."""
+    known_devices = {d.name for d in cfg.devices}
+
+    device_maps = app_state.get("device_maps", {})
+    pruned_maps = {
+        device_id: map_name
+        for device_id, map_name in device_maps.items()
+        if device_id in known_devices
+    }
+    if pruned_maps != device_maps:
+        app_state["device_maps"] = pruned_maps
+        await _save_device_maps(pruned_maps)
+
+    pinned = app_state.get("pinned_devices", [])
+    pruned_pinned = [device_id for device_id in pinned if device_id in known_devices]
+    if pruned_pinned != pinned:
+        app_state["pinned_devices"] = pruned_pinned
+        await _save_pinned_devices(pruned_pinned)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start background monitors on app startup, stop on shutdown."""
@@ -780,11 +920,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown.
-    if traffic:
-        await traffic.stop()
-    if discovery:
-        await discovery.stop()
-    await ping.stop()
+    await _stop_runtime_monitors()
     logger.info("MikroTik-NetMap stopped")
 
 
@@ -864,16 +1000,63 @@ app.include_router(devices_router)
 @app.get("/api/config")
 async def get_config():
     """Return thresholds, maps, devices, and links (including discovered)."""
-    cfg = app_state.get("config")
-    if not cfg:
-        return {}
+    return _config_payload()
+
+
+@app.post("/api/config/reload")
+async def reload_config():
+    """Reload netmap.yaml and restart runtime monitors."""
+    try:
+        cfg = await asyncio.to_thread(NetMapConfig, CONFIG_PATH)
+    except Exception as exc:
+        logger.warning("Config reload failed", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Config reload failed: {exc}",
+        ) from exc
+
+    await _stop_runtime_monitors()
+    app_state["config"] = cfg
+    _apply_auth_config(cfg)
+    await _prune_stale_map_state(cfg)
+    _start_runtime_monitors(cfg)
+
+    await ws_manager.broadcast({"type": "config", **_config_payload()})
+
+    ping = app_state.get("ping_monitor")
+    if ping:
+        await ws_manager.broadcast({
+            "type": "ping_state",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "devices": [
+                {
+                    "id": s.device_id,
+                    "last_seen": s.last_seen.isoformat() if s.last_seen else None,
+                    "rtt_ms": s.rtt_ms,
+                    "is_alive": s.is_alive,
+                }
+                for s in ping.states.values()
+            ],
+        })
+
+    await ws_manager.broadcast({
+        "type": "traffic_state",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "interfaces": {},
+    })
+
+    discovery = app_state.get("topology_discovery")
+    traffic = app_state.get("traffic_monitor")
     return {
-        "thresholds": [
-            {"max_seconds": t.max_seconds, "color": t.color, "label": t.label}
-            for t in cfg.thresholds
-        ],
-        "maps": _get_maps_list(),
-        "links": _build_all_links_list(),
+        "ok": True,
+        "config_path": CONFIG_PATH,
+        "devices": len(cfg.devices),
+        "maps": len(_get_maps_list()),
+        "links": len(_build_all_links_list()),
+        "discovery_enabled": cfg.discovery_enabled,
+        "discovery_running": discovery is not None and getattr(discovery, "_running", False),
+        "traffic_enabled": cfg.traffic_enabled,
+        "traffic_running": traffic is not None and getattr(traffic, "_running", False),
     }
 
 

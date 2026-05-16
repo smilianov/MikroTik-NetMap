@@ -18,6 +18,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { LinkDialog } from './LinkDialog';
 import { blacklistDevice as apiBlacklist, moveDeviceToMap, renameMap, createMap, deleteMap } from '../api/visibility';
 import { createLink as apiCreateLink, deleteLink as apiDeleteLink } from '../api/links';
+import { reloadConfig } from '../api/config';
 
 /** Link dash pattern per link type. */
 const LINK_DASHES: Record<string, boolean | number[]> = {
@@ -127,6 +128,9 @@ export function NetworkMap() {
   const [editingLabel, setEditingLabel] = useState('');
   // Map tab context menu state (right-click on tab).
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; mapName: string } | null>(null);
+  // Config reload state.
+  const [reloadState, setReloadState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [reloadMessage, setReloadMessage] = useState('');
 
   // Keep refs in sync with store state.
   useEffect(() => { linksRef.current = links; }, [links]);
@@ -922,6 +926,26 @@ export function NetworkMap() {
     networkRef.current?.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
   };
 
+  const handleReloadConfig = async () => {
+    setReloadState('loading');
+    setReloadMessage('Reloading');
+    try {
+      const result = await reloadConfig();
+      setReloadState('ok');
+      setReloadMessage(`${result.devices} devices, ${result.links} links`);
+      setTimeout(() => {
+        networkRef.current?.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+      }, 250);
+      setTimeout(() => {
+        setReloadState('idle');
+        setReloadMessage('');
+      }, 3500);
+    } catch (err) {
+      setReloadState('error');
+      setReloadMessage(err instanceof Error ? err.message : 'Reload failed');
+    }
+  };
+
   const btnStyle: React.CSSProperties = {
     width: '36px',
     height: '36px',
@@ -1106,6 +1130,44 @@ export function NetworkMap() {
         gap: '6px',
         zIndex: 50,
       }}>
+        {reloadMessage && (
+          <div style={{
+            position: 'absolute',
+            right: '42px',
+            top: '0',
+            minWidth: '120px',
+            maxWidth: '220px',
+            padding: '7px 10px',
+            borderRadius: '6px',
+            border: reloadState === 'error' ? '1px solid #991B1B' : '1px solid #374151',
+            background: reloadState === 'error' ? '#451A1A' : '#1F2937',
+            color: reloadState === 'error' ? '#FCA5A5' : '#D1D5DB',
+            fontSize: '12px',
+            fontWeight: 600,
+            fontFamily: 'Inter, system-ui, sans-serif',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}>
+            {reloadMessage}
+          </div>
+        )}
+        <button
+          onClick={handleReloadConfig}
+          disabled={reloadState === 'loading'}
+          style={{
+            ...btnStyle,
+            background: reloadState === 'loading' ? '#111827' : reloadState === 'ok' ? '#064E3B' : '#1F2937',
+            color: reloadState === 'ok' ? '#6EE7B7' : reloadState === 'error' ? '#FCA5A5' : '#D1D5DB',
+            border: reloadState === 'ok' ? '1px solid #059669' : reloadState === 'error' ? '1px solid #991B1B' : '1px solid #374151',
+            cursor: reloadState === 'loading' ? 'wait' : 'pointer',
+            fontSize: '13px',
+            fontWeight: 800,
+          }}
+          title="Reload netmap.yaml and refresh map"
+        >
+          R
+        </button>
         <button
           onClick={() => {
             if (hierarchicalLayout) return;
