@@ -326,7 +326,7 @@ def _is_physical_discovery_interface(interface: str) -> bool:
     full = interface.strip().lower()
     leaf = _interface_leaf(interface)
     if not leaf or leaf == "auto":
-        return True
+        return False
     if any(pattern in full for pattern in _DISCOVERY_VIRTUAL_PATTERNS):
         return False
     if any(pattern in leaf for pattern in _DISCOVERY_TUNNEL_PATTERNS):

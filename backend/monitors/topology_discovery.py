@@ -40,6 +40,26 @@ _WIRELESS_PATTERNS = ("wlan", "wifi", "cap")
 _VPN_PATTERNS = ("l2tp", "ipsec", "wg", "ovpn", "sstp", "pptp", "gre", "vxlan")
 
 
+def _neighbor_interface(value: str) -> str:
+    """Normalize RouterOS neighbor interface fields to a physical-ish port.
+
+    In RouterOS Classic API, ``interface`` is local and can look like
+    ``ether5,bridge-LAN``.  CDP/LLDP ``interface-name`` is remote and can look
+    like ``bridge-lan/ether22``.  Keep non-RouterOS names such as
+    ``Ethernet1/1`` intact.
+    """
+    iface = str(value or "").split(",", 1)[0].strip()
+    if "/" in iface and iface.lower().startswith("bridge"):
+        iface = iface.rsplit("/", 1)[-1].strip()
+    return iface
+
+
+def _interface_hint_matches(expected: str, observed: str) -> bool:
+    if not expected or not observed:
+        return True
+    return expected.lower() == observed.lower()
+
+
 def _safe_error(exc: Exception, password: str = "") -> str:
     message = str(exc)
     if password:
@@ -392,7 +412,8 @@ class TopologyDiscovery:
             half_links = [
                 {
                     "local_device": device.name,
-                    "local_interface": n.get("interface-name") or n.get("interface", ""),
+                    "local_interface": _neighbor_interface(n.get("interface", "")),
+                    "remote_interface_hint": _neighbor_interface(n.get("interface-name", "")),
                     "remote_identity": n.get("identity", ""),
                     "remote_address": n.get("address", ""),
                     "remote_mac": n.get("mac-address", ""),
@@ -642,8 +663,12 @@ class TopologyDiscovery:
             ):
                 new_device_candidates[remote_id] = hl
 
-        # Build full links by matching half-links.
+        # Build full links only from reciprocal neighbor observations.
+        # One-sided /ip/neighbor data is useful as a candidate, but it is not
+        # strong enough to create an exact port-to-port topology edge.
         new_links: dict[str, DiscoveredLink] = {}
+        one_way_links = 0
+        hint_mismatches = 0
 
         for (local_dev, remote_id), hl in by_local_remote.items():
             local_if = hl["local_interface"]
@@ -651,11 +676,17 @@ class TopologyDiscovery:
             # Check if the remote also reported seeing us.
             reverse_key = (remote_id, local_dev)
             reverse_hl = by_local_remote.get(reverse_key)
+            if not reverse_hl:
+                one_way_links += 1
+                continue
 
-            if reverse_hl:
-                remote_if = reverse_hl["local_interface"]
-            else:
-                remote_if = "auto"
+            remote_if = reverse_hl["local_interface"]
+            if not (
+                _interface_hint_matches(hl.get("remote_interface_hint", ""), remote_if)
+                and _interface_hint_matches(reverse_hl.get("remote_interface_hint", ""), local_if)
+            ):
+                hint_mismatches += 1
+                continue
 
             link_id = _make_link_id(local_dev, local_if, remote_id, remote_if)
 
@@ -678,7 +709,7 @@ class TopologyDiscovery:
                 to_device=f"{remote_id}:{remote_if}",
                 speed=link_speed,
                 type=link_type,
-                confirmed=reverse_hl is not None,
+                confirmed=True,
                 first_seen=first_seen,
                 last_seen=now,
             )
@@ -752,10 +783,13 @@ class TopologyDiscovery:
         removed_links = list(removed_link_ids)
 
         logger.info(
-            "Discovery sweep: %d half-links, %d full links (%d new, %d removed), "
-            "%d new devices, %d queryable devices, %d devices with speed data",
+            "Discovery sweep: %d half-links, %d confirmed links (%d one-way ignored, "
+            "%d hint mismatches ignored, %d new, %d removed), %d new devices, "
+            "%d queryable devices, %d devices with speed data",
             len(all_half_links),
             len(new_links),
+            one_way_links,
+            hint_mismatches,
             len(added_links),
             len(removed_links),
             len(added_devices),

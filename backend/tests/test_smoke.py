@@ -299,11 +299,12 @@ def test_discovery_map_keeps_auto_layer_separate(sample_config: Path, monkeypatc
         position=Position(x=0, y=200),
     )
     discovered_link = DiscoveredLink(
-        id="SW1:ether3-AP1:auto",
+        id="AP1:ether1-SW1:ether3",
         from_device="SW1:ether3",
-        to_device="AP1:auto",
+        to_device="AP1:ether1",
         first_seen=now,
         last_seen=now,
+        confirmed=True,
     )
 
     main_module.app_state["config"] = SimpleNamespace(
@@ -373,6 +374,14 @@ def test_build_all_links_list_includes_manual_link_id(sample_config: Path, monke
     }]
 
 
+def test_neighbor_interface_normalization():
+    from monitors.topology_discovery import _neighbor_interface
+
+    assert _neighbor_interface("ether5,bridge-LAN") == "ether5"
+    assert _neighbor_interface("bridge-lan/ether22") == "ether22"
+    assert _neighbor_interface("Ethernet1/1") == "Ethernet1/1"
+
+
 def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 
@@ -387,11 +396,12 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
     sw2 = DeviceConfig(name="SW2", host="10.0.0.3", type=DeviceType.SWITCH, position=Position())
 
     physical = DiscoveredLink(
-        id="LS:sfp-sfpplus1-SW1:auto",
+        id="LS:sfp-sfpplus1-SW1:ether1",
         from_device="LS:sfp-sfpplus1-uplink",
-        to_device="SW1:auto",
+        to_device="SW1:ether1",
         first_seen=now,
         last_seen=now,
+        confirmed=True,
     )
     mgmt_mesh = DiscoveredLink(
         id="SW1:vlan88-SW2:vlan88",
@@ -441,13 +451,100 @@ def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkey
 
     assert discovered == [{
         "from": "LS:sfp-sfpplus1-uplink",
-        "to": "SW1:auto",
+        "to": "SW1:ether1",
         "speed": 1000,
         "type": "wired",
         "discovered": True,
-        "confirmed": False,
+        "confirmed": True,
         "map": "discovery",
     }]
+
+
+def test_topology_discovery_creates_only_bidirectional_neighbor_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from models import DeviceConfig, DeviceType, Position
+    from monitors import topology_discovery as td
+
+    monkeypatch.setattr(td, "PERSISTENCE_FILE", tmp_path / "discovered_topology.json")
+
+    ax2 = DeviceConfig(
+        name="AX2",
+        host="10.0.0.57",
+        type=DeviceType.ROUTER,
+        position=Position(),
+    )
+    crs326 = DeviceConfig(
+        name="CRS326-Gun-YB",
+        host="10.0.88.26",
+        type=DeviceType.SWITCH,
+        position=Position(),
+    )
+    discovery = td.TopologyDiscovery(
+        devices=[ax2, crs326],
+        auto_add_devices=False,
+        auto_add_links=True,
+        api_defaults={"username": "prometheus", "password": "test", "api_type": "classic"},
+    )
+
+    async def _fake_query(device: DeviceConfig) -> dict:
+        if device.name == "AX2":
+            return {
+                "device_name": "AX2",
+                "neighbors": [{
+                    "local_device": "AX2",
+                    "local_interface": "ether5",
+                    "remote_interface_hint": "ether22",
+                    "remote_identity": "CRS326-Gun-YB",
+                    "remote_address": "10.0.88.26",
+                    "remote_mac": "",
+                    "remote_platform": "MikroTik",
+                    "remote_board": "CRS326-24G-2S+",
+                }],
+                "interfaces": [{"name": "ether5", "speed": "1Gbps"}],
+            }
+        return {
+            "device_name": "CRS326-Gun-YB",
+            "neighbors": [
+                {
+                    "local_device": "CRS326-Gun-YB",
+                    "local_interface": "ether22",
+                    "remote_interface_hint": "ether5",
+                    "remote_identity": "AX2",
+                    "remote_address": "10.0.0.57",
+                    "remote_mac": "",
+                    "remote_platform": "MikroTik",
+                    "remote_board": "hAP ax^2",
+                },
+                {
+                    "local_device": "CRS326-Gun-YB",
+                    "local_interface": "ether10",
+                    "remote_interface_hint": "eth0",
+                    "remote_identity": "UAP-HD",
+                    "remote_address": "10.0.0.160",
+                    "remote_mac": "",
+                    "remote_platform": "Ubiquiti",
+                    "remote_board": "",
+                },
+            ],
+            "interfaces": [
+                {"name": "ether22", "speed": "1Gbps"},
+                {"name": "ether10", "speed": "1Gbps"},
+            ],
+        }
+
+    discovery._query_device = _fake_query
+
+    changes = asyncio.run(discovery._sweep())
+
+    assert len(changes["added_links"]) == 1
+    link = changes["added_links"][0]
+    assert link.from_device == "AX2:ether5"
+    assert link.to_device == "CRS326-Gun-YB:ether22"
+    assert link.confirmed is True
+    assert link.speed == 1000
+    assert "UAP-HD" not in str(discovery.discovered_links)
 
 
 def test_topology_update_emits_updated_devices(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
