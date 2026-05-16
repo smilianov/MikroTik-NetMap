@@ -38,6 +38,8 @@ TREE_HORIZONTAL_SPACING = 200
 # Interface name patterns to determine link type.
 _WIRELESS_PATTERNS = ("wlan", "wifi", "cap")
 _VPN_PATTERNS = ("l2tp", "ipsec", "wg", "ovpn", "sstp", "pptp", "gre", "vxlan")
+_VIRTUAL_PATTERNS = ("vlan", "mgmt", "bridge", "loopback", "lo", "bonding")
+_PHYSICAL_PREFIXES = ("ether", "eth", "sfp", "combo", "wlan", "wifi")
 
 
 def _neighbor_interface(value: str) -> str:
@@ -58,6 +60,17 @@ def _interface_hint_matches(expected: str, observed: str) -> bool:
     if not expected or not observed:
         return True
     return expected.lower() == observed.lower()
+
+
+def _is_physical_neighbor_interface(interface: str) -> bool:
+    iface = str(interface or "").strip().lower()
+    if not iface or iface == "auto":
+        return False
+    if any(pattern in iface for pattern in _VIRTUAL_PATTERNS):
+        return False
+    if any(pattern in iface for pattern in _VPN_PATTERNS):
+        return False
+    return iface.startswith(_PHYSICAL_PREFIXES)
 
 
 def _safe_error(exc: Exception, password: str = "") -> str:
@@ -669,6 +682,7 @@ class TopologyDiscovery:
         new_links: dict[str, DiscoveredLink] = {}
         one_way_links = 0
         hint_mismatches = 0
+        non_physical_links = 0
 
         for (local_dev, remote_id), hl in by_local_remote.items():
             local_if = hl["local_interface"]
@@ -681,6 +695,12 @@ class TopologyDiscovery:
                 continue
 
             remote_if = reverse_hl["local_interface"]
+            if not (
+                _is_physical_neighbor_interface(local_if)
+                and _is_physical_neighbor_interface(remote_if)
+            ):
+                non_physical_links += 1
+                continue
             if not (
                 _interface_hint_matches(hl.get("remote_interface_hint", ""), remote_if)
                 and _interface_hint_matches(reverse_hl.get("remote_interface_hint", ""), local_if)
@@ -784,11 +804,12 @@ class TopologyDiscovery:
 
         logger.info(
             "Discovery sweep: %d half-links, %d confirmed links (%d one-way ignored, "
-            "%d hint mismatches ignored, %d new, %d removed), %d new devices, "
-            "%d queryable devices, %d devices with speed data",
+            "%d non-physical ignored, %d hint mismatches ignored, %d new, "
+            "%d removed), %d new devices, %d queryable devices, %d devices with speed data",
             len(all_half_links),
             len(new_links),
             one_way_links,
+            non_physical_links,
             hint_mismatches,
             len(added_links),
             len(removed_links),

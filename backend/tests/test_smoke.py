@@ -375,11 +375,18 @@ def test_build_all_links_list_includes_manual_link_id(sample_config: Path, monke
 
 
 def test_neighbor_interface_normalization():
-    from monitors.topology_discovery import _neighbor_interface
+    from monitors.topology_discovery import (
+        _is_physical_neighbor_interface,
+        _neighbor_interface,
+    )
 
     assert _neighbor_interface("ether5,bridge-LAN") == "ether5"
     assert _neighbor_interface("bridge-lan/ether22") == "ether22"
     assert _neighbor_interface("Ethernet1/1") == "Ethernet1/1"
+    assert _is_physical_neighbor_interface("ether22") is True
+    assert _is_physical_neighbor_interface("sfp-sfpplus1") is True
+    assert _is_physical_neighbor_interface("vlan88-mgmt") is False
+    assert _is_physical_neighbor_interface("bridge-lan") is False
 
 
 def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
