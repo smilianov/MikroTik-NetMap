@@ -336,6 +336,43 @@ def test_discovery_map_keeps_auto_layer_separate(sample_config: Path, monkeypatc
     assert links[1]["map"] == "auto"
 
 
+def test_build_all_links_list_includes_manual_link_id(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
+
+    import main as main_module
+    from models import DeviceConfig, DeviceType, Position
+
+    importlib.reload(main_module)
+
+    root = DeviceConfig(name="CRS326-Gun-YB", host="10.0.88.26", type=DeviceType.SWITCH, position=Position())
+    hap = DeviceConfig(name="hAP_ax^2_Thai", host="10.0.0.57", type=DeviceType.ROUTER, position=Position())
+    manual = {
+        "id": "CRS326-Gun-YB:port-hAP_ax^2_Thai:port",
+        "from": "hAP_ax^2_Thai:port",
+        "to": "CRS326-Gun-YB:port",
+        "speed": 1000,
+        "type": "wired",
+        "map": "main",
+    }
+
+    main_module.app_state["config"] = SimpleNamespace(devices=[root, hap], links=[])
+    main_module.app_state["topology_discovery"] = None
+    main_module.app_state["device_maps"] = {}
+    main_module.app_state["manual_link_manager"] = SimpleNamespace(get_all=lambda: [manual])
+
+    links = main_module._build_all_links_list()
+
+    assert links == [{
+        "id": manual["id"],
+        "from": manual["from"],
+        "to": manual["to"],
+        "speed": 1000,
+        "type": "wired",
+        "manual": True,
+        "map": "main",
+    }]
+
+
 def test_discovery_map_filters_virtual_neighbor_mesh(sample_config: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NETMAP_CONFIG", str(sample_config))
 

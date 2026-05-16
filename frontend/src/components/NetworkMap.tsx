@@ -116,7 +116,7 @@ export function NetworkMap() {
   const linkModeRef = useRef(false);
   const linkFirstDeviceRef = useRef<string | null>(null);
   // Edge context menu state (for right-click on edges).
-  const [edgeContextMenu, setEdgeContextMenu] = useState<{ x: number; y: number; edgeId: string; isManual: boolean } | null>(null);
+  const [edgeContextMenu, setEdgeContextMenu] = useState<{ x: number; y: number; edgeId: string; linkId: string; isManual: boolean } | null>(null);
   // Hierarchical layout toggle.
   const [hierarchicalLayout, setHierarchicalLayout] = useState(false);
   const hierarchicalRef = useRef(false);
@@ -285,7 +285,13 @@ export function NetworkMap() {
         const curLinks = linksRef.current;
         const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
         if (link?.manual) {
-          setEdgeContextMenu({ x: e.clientX, y: e.clientY, edgeId: edgeId as string, isManual: true });
+          setEdgeContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            edgeId: edgeId as string,
+            linkId: link.id || edgeId as string,
+            isManual: true,
+          });
           setContextMenu(null);
         }
       }
@@ -620,7 +626,13 @@ export function NetworkMap() {
         const curLinks = linksRef.current;
         const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
         if (link?.manual) {
-          setEdgeContextMenu({ x: e.clientX, y: e.clientY, edgeId: edgeId as string, isManual: true });
+          setEdgeContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            edgeId: edgeId as string,
+            linkId: link.id || edgeId as string,
+            isManual: true,
+          });
           setContextMenu(null);
         }
       }
@@ -1316,7 +1328,7 @@ export function NetworkMap() {
             onMouseEnter={(e) => (e.currentTarget.style.background = '#374151')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             onClick={async () => {
-              await apiDeleteLink(edgeContextMenu.edgeId);
+              await apiDeleteLink(edgeContextMenu.linkId);
               setEdgeContextMenu(null);
             }}
           >

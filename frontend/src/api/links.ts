@@ -42,5 +42,9 @@ export async function createLink(
 }
 
 export async function deleteLink(linkId: string): Promise<void> {
-  await fetch(`${API_BASE}/${encodeURIComponent(linkId)}`, { method: 'DELETE' });
+  const res = await fetch(`${API_BASE}/${encodeURIComponent(linkId)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Delete failed with HTTP ${res.status}`);
+  }
 }

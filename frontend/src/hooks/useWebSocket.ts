@@ -91,6 +91,7 @@ export function useWebSocket() {
               pinned: d.pinned ?? false,
             })),
             (msg.links || []).map((l: any) => ({
+              id: l.id,
               from: l.from,
               to: l.to,
               speed: l.speed,
@@ -141,6 +142,7 @@ export function useWebSocket() {
               pinned: d.pinned ?? false,
             })),
             (msg.added_links || []).map((l: any) => ({
+              id: l.id,
               from: l.from,
               to: l.to,
               speed: l.speed,

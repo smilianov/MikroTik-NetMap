@@ -77,6 +77,7 @@ async def create_link(body: CreateLinkBody):
 
     # Broadcast the new link.
     await _broadcast_link_change(added=[{
+        "id": link["id"],
         "from": link["from"],
         "to": link["to"],
         "speed": link["speed"],
@@ -113,6 +114,7 @@ async def update_link(link_id: str, body: UpdateLinkBody):
     await _broadcast_link_change(
         removed=[link_id],
         added=[{
+            "id": result["id"],
             "from": result["from"],
             "to": result["to"],
             "speed": result["speed"],

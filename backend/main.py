@@ -477,6 +477,7 @@ def _build_all_links_list() -> list[dict[str, Any]]:
     if manual_mgr:
         for ml in manual_mgr.get_all():
             links.append({
+                "id": ml["id"],
                 "from": ml["from"],
                 "to": ml["to"],
                 "speed": ml.get("speed", 1000),

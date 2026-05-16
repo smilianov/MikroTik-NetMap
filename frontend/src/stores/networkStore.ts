@@ -26,6 +26,7 @@ export interface PingData {
 }
 
 export interface LinkInfo {
+  id?: string;
   from: string;
   to: string;
   speed: number;
