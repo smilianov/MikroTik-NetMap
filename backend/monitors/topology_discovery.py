@@ -25,6 +25,13 @@ from models import (
     LinkType,
     Position,
 )
+from topology_evidence import (
+    RomonRecord,
+    TopologyEvidenceObservation,
+    TopologyEvidenceStore,
+    build_bridge_host_observations,
+    build_romon_observations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +224,7 @@ class TopologyDiscovery:
         on_update: Callable[..., Any] | None = None,
         visibility_manager: Any | None = None,
         api_defaults: dict[str, Any] | None = None,
+        evidence_store: TopologyEvidenceStore | None = None,
     ) -> None:
         # Query devices that have API credentials (password or SSH key),
         # or all devices when api_defaults provides a password.
@@ -243,6 +251,7 @@ class TopologyDiscovery:
         self.on_update = on_update
         self._visibility = visibility_manager
         self._api_defaults = api_defaults or {}
+        self._evidence_store = evidence_store or TopologyEvidenceStore()
 
         # Track which device names/hosts we already query (to avoid duplicates).
         self._queryable_names: set[str] = {d.name for d in self.devices}
@@ -276,6 +285,24 @@ class TopologyDiscovery:
             # Add persisted discovered devices as queryable (for immediate first sweep).
             for dd in self.discovered_devices.values():
                 self.add_queryable_device(dd.name, dd.host)
+
+    def ingest_romon_records(
+        self,
+        root_id: str | None,
+        records: list[RomonRecord | dict[str, Any]],
+        identity_by_id: dict[str, str] | None = None,
+    ) -> list[TopologyEvidenceObservation]:
+        """Store RoMON path evidence without creating map links."""
+        observations = build_romon_observations(root_id, records, identity_by_id)
+        self._evidence_store.replace_source("romon", observations)
+        return observations
+
+    def get_evidence_observations(
+        self,
+        source: str | None = None,
+    ) -> list[TopologyEvidenceObservation]:
+        """Return collected topology evidence observations."""
+        return self._evidence_store.list_observations(source)
 
     def _make_device_config(self, name: str, host: str) -> DeviceConfig:
         """Build a DeviceConfig for a discovered device using api_defaults."""
@@ -377,7 +404,7 @@ class TopologyDiscovery:
     ) -> dict[str, Any]:
         """Query /ip/neighbor and /interface/ethernet on a single device.
 
-        Returns {"neighbors": [...], "interfaces": [...]}.
+        Returns {"neighbors": [...], "interfaces": [...], "bridge_hosts": [...]}.
         """
         client = create_client(
             host=device.host,
@@ -408,6 +435,15 @@ class TopologyDiscovery:
             except Exception:
                 pass
 
+            bridge_hosts: list[dict[str, Any]] = []
+            try:
+                bridge_hosts = await client.get_bridge_hosts()
+            except Exception:
+                logger.debug(
+                    "Bridge host query failed for %s (non-critical)",
+                    device.name,
+                )
+
             # Merge SFP interfaces into eth_interfaces for speed inference.
             eth_names = {i.get("name", "") for i in eth_interfaces}
             for iface in all_interfaces:
@@ -418,9 +454,9 @@ class TopologyDiscovery:
                     eth_interfaces.append({"name": if_name, "type": if_type})
 
             logger.info(
-                "Device %s (%s via %s) returned %d neighbors, %d interfaces",
+                "Device %s (%s via %s) returned %d neighbors, %d interfaces, %d bridge hosts",
                 device.name, device.host, device.api_type,
-                len(neighbors), len(eth_interfaces),
+                len(neighbors), len(eth_interfaces), len(bridge_hosts),
             )
             half_links = [
                 {
@@ -436,7 +472,12 @@ class TopologyDiscovery:
                 for n in neighbors
                 if n.get("identity") or n.get("address")
             ]
-            return {"device_name": device.name, "neighbors": half_links, "interfaces": eth_interfaces}
+            return {
+                "device_name": device.name,
+                "neighbors": half_links,
+                "interfaces": eth_interfaces,
+                "bridge_hosts": bridge_hosts,
+            }
         except Exception as exc:
             logger.warning(
                 "Discovery failed for %s (%s via %s): %s",
@@ -445,7 +486,7 @@ class TopologyDiscovery:
                 device.api_type,
                 _safe_error(exc, device.password),
             )
-            return {"device_name": device.name, "neighbors": [], "interfaces": []}
+            return {"device_name": device.name, "neighbors": [], "interfaces": [], "bridge_hosts": []}
         finally:
             await client.close()
 
@@ -606,6 +647,7 @@ class TopologyDiscovery:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_half_links: list[dict[str, Any]] = []
+        bridge_observations: list[TopologyEvidenceObservation] = []
         for r in results:
             if isinstance(r, dict):
                 all_half_links.extend(r.get("neighbors", []))
@@ -628,8 +670,17 @@ class TopologyDiscovery:
                             speed_mbps = _infer_interface_speed(if_name)
                         if speed_mbps > 0:
                             self.interface_speeds.setdefault(dev_name, {})[if_name] = speed_mbps
+                if dev_name := r.get("device_name", ""):
+                    bridge_observations.extend(
+                        build_bridge_host_observations(
+                            dev_name,
+                            r.get("bridge_hosts", []),
+                        )
+                    )
             elif isinstance(r, Exception):
                 logger.warning("Discovery sweep exception: %s", r)
+
+        self._evidence_store.replace_source("bridge_host", bridge_observations)
 
         if not all_half_links:
             logger.debug("Discovery sweep: no neighbors found")
@@ -827,6 +878,9 @@ class TopologyDiscovery:
                 last_seen=now,
             )
             one_way_port_hint_links += 1
+
+        if not self.auto_add_links:
+            new_links = {}
 
         # Detect changes.
         old_link_ids = set(self.discovered_links.keys())

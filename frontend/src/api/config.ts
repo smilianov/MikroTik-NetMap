@@ -10,6 +10,7 @@ export interface ReloadConfigResponse {
   discovery_running: boolean;
   traffic_enabled: boolean;
   traffic_running: boolean;
+  topology_evidence: number;
 }
 
 export async function reloadConfig(): Promise<ReloadConfigResponse> {

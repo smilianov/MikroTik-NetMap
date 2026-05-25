@@ -153,6 +153,10 @@ class MikroTikSSHClient:
         """Query /interface/ethernet for physical port speeds."""
         return await self.get("interface/ethernet")
 
+    async def get_bridge_hosts(self) -> list[dict[str, Any]]:
+        """Query /interface/bridge/host for learned MAC locations."""
+        return await self.get("interface/bridge/host")
+
     async def get_system_resource(self) -> dict[str, Any]:
         """Query /system/resource for CPU, memory, uptime."""
         result = await self.get("system/resource")

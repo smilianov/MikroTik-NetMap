@@ -15,6 +15,7 @@ import { formatBandwidth } from '../utils/formatters';
 import { devicesForMap, endpointDevice, linksForMap } from '../utils/mapVisibility';
 import { ContextMenu } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
+import { EvidencePanel } from './EvidencePanel';
 import { LinkDialog } from './LinkDialog';
 import { blacklistDevice as apiBlacklist, moveDeviceToMap, renameMap, createMap, deleteMap } from '../api/visibility';
 import { createLink as apiCreateLink, deleteLink as apiDeleteLink } from '../api/links';
@@ -33,6 +34,28 @@ function linkWidth(speed: number): number {
   if (speed >= 10000) return 4;
   if (speed >= 1000) return 2.5;
   return 1.5;
+}
+
+function edgeInterfaceLabel(fromIf: string, toIf: string): string {
+  const knownFrom = fromIf && fromIf !== 'auto' ? fromIf : '';
+  const knownTo = toIf && toIf !== 'auto' ? toIf : '';
+  if (knownFrom && knownTo) return `${knownFrom} \u2194 ${knownTo}`;
+  return knownFrom || knownTo;
+}
+
+function linkEdgeDetails(link: LinkInfo) {
+  const fromDev = link.from.split(':')[0];
+  const toDev = link.to.split(':')[0];
+  const fromIf = link.from.split(':').slice(1).join(':');
+  const toIf = link.to.split(':').slice(1).join(':');
+  const speedLabel = link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`;
+  const ifLabel = edgeInterfaceLabel(fromIf, toIf);
+  const statusTag = link.manual ? ' [manual]' : link.confirmed ? '' : ' [unconfirmed]';
+
+  return {
+    label: ifLabel ? `${speedLabel}\n${ifLabel}` : speedLabel,
+    title: `${fromDev}:${fromIf} \u2194 ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${statusTag}`,
+  };
 }
 
 function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
@@ -55,13 +78,22 @@ function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
     }
   }
 
-  return Array.from(byChild.entries()).map(([child, parent]) => ({
-    id: `hierarchy-${parent}-${child}`,
-    from: parent,
-    to: child,
-    color: { color: '#4B5563' },
-    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-  }));
+  return Array.from(byChild.entries()).map(([child, parent]) => {
+    const link = links.find((candidate) => {
+      const from = endpointDevice(candidate.from);
+      const to = endpointDevice(candidate.to);
+      return (from === parent && to === child) || (from === child && to === parent);
+    });
+
+    return {
+      id: `hierarchy-${parent}-${child}`,
+      from: parent,
+      to: child,
+      color: { color: '#4B5563' },
+      arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+      ...(link ? linkEdgeDetails(link) : {}),
+    };
+  });
 }
 
 /** Particle state for traffic animation on a single edge. */
@@ -131,6 +163,7 @@ export function NetworkMap() {
   // Config reload state.
   const [reloadState, setReloadState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [reloadMessage, setReloadMessage] = useState('');
+  const [showEvidencePanel, setShowEvidencePanel] = useState(false);
 
   // Keep refs in sync with store state.
   useEffect(() => { linksRef.current = links; }, [links]);
@@ -747,18 +780,7 @@ export function NetworkMap() {
 
       const fromDev = link.from.split(':')[0];
       const toDev = link.to.split(':')[0];
-      const fromIf = link.from.split(':').slice(1).join(':');
-      const toIf = link.to.split(':').slice(1).join(':');
-
-      // Build edge label: speed + abbreviated interface names for confirmed links.
-      const speedLabel = link.speed >= 1000 ? `${link.speed / 1000}G` : `${link.speed}M`;
-      const ifLabel = (fromIf && fromIf !== 'auto' && toIf && toIf !== 'auto')
-        ? `${fromIf} \u2194 ${toIf}`
-        : '';
-      const edgeLabel = ifLabel ? `${speedLabel}\n${ifLabel}` : speedLabel;
-
-      // Confirmed status label.
-      const statusTag = link.manual ? ' [manual]' : link.confirmed ? '' : ' [unconfirmed]';
+      const edgeDetails = linkEdgeDetails(link);
 
       // Dash pattern: unconfirmed links get a distinct dash, manual links get blue-ish.
       let dashes: boolean | number[] = LINK_DASHES[link.type] ?? false;
@@ -772,8 +794,8 @@ export function NetworkMap() {
         to: toDev,
         width: linkWidth(link.speed),
         dashes,
-        label: edgeLabel,
-        title: `${fromDev}:${fromIf} \u2194 ${toDev}:${toIf}\nSpeed: ${link.speed} Mbps${statusTag}`,
+        label: edgeDetails.label,
+        title: edgeDetails.title,
       };
 
       if (existingIds.has(edgeId)) {
@@ -1181,6 +1203,20 @@ export function NetworkMap() {
           R
         </button>
         <button
+          onClick={() => setShowEvidencePanel((value) => !value)}
+          style={{
+            ...btnStyle,
+            background: showEvidencePanel ? '#1E3A5F' : '#1F2937',
+            color: showEvidencePanel ? '#60A5FA' : '#D1D5DB',
+            border: showEvidencePanel ? '1px solid #3B82F6' : '1px solid #374151',
+            fontSize: '13px',
+            fontWeight: 800,
+          }}
+          title={showEvidencePanel ? 'Hide topology evidence' : 'Show topology evidence'}
+        >
+          E
+        </button>
+        <button
           onClick={() => {
             if (hierarchicalLayout) return;
             setDragUnlocked((v) => !v);
@@ -1247,6 +1283,10 @@ export function NetworkMap() {
           </svg>
         </button>
       </div>
+
+      {showEvidencePanel && (
+        <EvidencePanel onClose={() => setShowEvidencePanel(false)} />
+      )}
 
       {/* Link mode indicator */}
       {linkMode && (

@@ -31,6 +31,7 @@ from pydantic import BaseModel as _BaseModel
 from monitors.ping_monitor import PingMonitor
 from monitors.topology_discovery import TopologyDiscovery, _infer_device_type
 from monitors.traffic_monitor import TrafficMonitor
+from topology_evidence import TopologyEvidenceStore, build_topology_dry_run_report
 from visibility_manager import VisibilityManager
 
 logging.basicConfig(
@@ -668,6 +669,7 @@ def _start_runtime_monitors(cfg: NetMapConfig) -> None:
             on_update=_on_topology_update,
             visibility_manager=visibility,
             api_defaults=cfg.api_defaults,
+            evidence_store=app_state.get("topology_evidence"),
         )
         discovery.start()
         if discovery.discovered_devices:
@@ -782,6 +784,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     visibility = VisibilityManager()
     app_state["visibility_manager"] = visibility
 
+    # Read-only topology evidence store (RoMON, bridge-host, and future inputs).
+    app_state["topology_evidence"] = TopologyEvidenceStore()
+
     # Load manual links.
     manual_links = ManualLinkManager()
     app_state["manual_link_manager"] = manual_links
@@ -809,6 +814,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             on_update=_on_topology_update,
             visibility_manager=visibility,
             api_defaults=cfg.api_defaults,
+            evidence_store=app_state.get("topology_evidence"),
         )
         discovery.start()
         app_state["topology_discovery"] = discovery
@@ -1004,6 +1010,46 @@ async def get_config():
     return _config_payload()
 
 
+@app.get("/api/topology/evidence")
+async def get_topology_evidence(source: str | None = None, limit: int = 250):
+    """Return read-only topology evidence observations."""
+    evidence = app_state.get("topology_evidence")
+    if not evidence:
+        return {"items": [], "count": 0, "sources": {}}
+
+    observations = evidence.list_observations(source)
+    sources: dict[str, int] = {}
+    for observation in evidence.list_observations():
+        sources[observation.source] = sources.get(observation.source, 0) + 1
+
+    safe_limit = max(1, min(limit, 1000))
+    items = [
+        observation.model_dump(mode="json")
+        for observation in observations[:safe_limit]
+    ]
+    return {"items": items, "count": len(observations), "sources": sources}
+
+
+@app.get("/api/topology/dry-run")
+async def get_topology_dry_run():
+    """Return topology candidates implied by evidence without applying them."""
+    cfg = app_state.get("config")
+    evidence = app_state.get("topology_evidence")
+    if not cfg or not evidence:
+        return {
+            "candidates": [],
+            "candidate_count": 0,
+            "covered_pair_count": 0,
+            "unresolved_observation_count": 0,
+            "evidence_count": 0,
+        }
+    return build_topology_dry_run_report(
+        cfg.devices,
+        cfg.links,
+        evidence.list_observations(),
+    )
+
+
 @app.post("/api/config/reload")
 async def reload_config():
     """Reload netmap.yaml and restart runtime monitors."""
@@ -1047,6 +1093,7 @@ async def reload_config():
     })
 
     discovery = app_state.get("topology_discovery")
+    evidence = app_state.get("topology_evidence")
     traffic = app_state.get("traffic_monitor")
     return {
         "ok": True,
@@ -1058,6 +1105,7 @@ async def reload_config():
         "discovery_running": discovery is not None and getattr(discovery, "_running", False),
         "traffic_enabled": cfg.traffic_enabled,
         "traffic_running": traffic is not None and getattr(traffic, "_running", False),
+        "topology_evidence": evidence.count() if evidence else 0,
     }
 
 
@@ -1227,6 +1275,7 @@ async def health():
     cfg = app_state.get("config")
     ping = app_state.get("ping_monitor")
     discovery = app_state.get("topology_discovery")
+    evidence = app_state.get("topology_evidence")
     traffic = app_state.get("traffic_monitor")
     return {
         "status": "ok",
@@ -1238,6 +1287,7 @@ async def health():
         "traffic_running": traffic is not None and getattr(traffic, "_running", False),
         "discovered_devices": len(discovery.discovered_devices) if discovery else 0,
         "discovered_links": len(discovery.discovered_links) if discovery else 0,
+        "topology_evidence": evidence.count() if evidence else 0,
         "auth_enabled": app_state.get("auth_enabled", False),
         "active_sessions": (
             app_state["session_manager"].active_count
