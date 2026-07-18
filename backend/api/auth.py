@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -17,19 +18,76 @@ def set_app_state(state: dict[str, Any]) -> None:
     _app_state = state
 
 
+class LoginRateLimiter:
+    """In-memory per-client-IP sliding-window limiter for login attempts."""
+
+    def __init__(self, max_attempts: int = 5, window_seconds: float = 60.0) -> None:
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._attempts: dict[str, list[float]] = {}
+
+    def check(self, key: str) -> float:
+        """Record one attempt. Returns 0.0 if allowed, else seconds to wait."""
+        now = time.monotonic()
+        attempts = [
+            t for t in self._attempts.get(key, [])
+            if now - t < self.window_seconds
+        ]
+        if len(attempts) >= self.max_attempts:
+            self._attempts[key] = attempts
+            return max(1.0, self.window_seconds - (now - attempts[0]))
+        attempts.append(now)
+        self._attempts[key] = attempts
+        return 0.0
+
+
+_login_limiter = LoginRateLimiter()
+
+
+def _client_ip(request: Request, cfg: Any) -> str:
+    """Best-effort client IP for rate limiting."""
+    if cfg is not None and getattr(cfg, "auth_trust_headers", False):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _cookie_secure(request: Request, cfg: Any) -> bool:
+    """Resolve the cookie Secure flag: auth.cookie_secure override, else auto.
+
+    Auto mode sets Secure when the request arrived over HTTPS, honoring
+    X-Forwarded-Proto when trusted proxy headers are enabled.
+    """
+    override = getattr(cfg, "auth_cookie_secure", None) if cfg is not None else None
+    if override is not None:
+        return bool(override)
+    scheme = request.url.scheme
+    if cfg is not None and getattr(cfg, "auth_trust_headers", False):
+        scheme = request.headers.get("x-forwarded-proto", scheme)
+    return scheme == "https"
+
+
 class LoginBody(BaseModel):
     username: str
     password: str
 
 
 @router.post("/login")
-async def login(body: LoginBody, response: Response):
+async def login(body: LoginBody, request: Request, response: Response):
     """Authenticate via Grafana and create a session."""
     session_mgr = _app_state.get("session_manager")
     auth_enabled = _app_state.get("auth_enabled", False)
 
     if not auth_enabled or not session_mgr:
         return {"ok": True, "message": "Auth disabled"}
+
+    cfg = _app_state.get("config")
+    retry_after = _login_limiter.check(_client_ip(request, cfg))
+    if retry_after > 0:
+        response.status_code = 429
+        response.headers["Retry-After"] = str(int(retry_after))
+        return {"ok": False, "error": "Too many login attempts — try again later"}
 
     session = await session_mgr.login(body.username, body.password)
     if not session:
@@ -41,6 +99,7 @@ async def login(body: LoginBody, response: Response):
         value=session.token,
         httponly=True,
         samesite="strict",
+        secure=_cookie_secure(request, cfg),
         path="/",
         max_age=session_mgr.session_ttl,
     )

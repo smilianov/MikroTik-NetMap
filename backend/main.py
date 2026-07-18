@@ -722,10 +722,12 @@ def _apply_auth_config(cfg: NetMapConfig) -> None:
             not existing
             or existing.grafana_url != expected_url
             or existing.session_ttl != cfg.auth_session_ttl
+            or existing.verify_ssl != cfg.auth_grafana_verify_ssl
         ):
             app_state["session_manager"] = SessionManager(
                 grafana_url=cfg.auth_grafana_url,
                 session_ttl=cfg.auth_session_ttl,
+                verify_ssl=cfg.auth_grafana_verify_ssl,
             )
     else:
         app_state.pop("session_manager", None)
@@ -766,6 +768,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_mgr = SessionManager(
             grafana_url=cfg.auth_grafana_url,
             session_ttl=cfg.auth_session_ttl,
+            verify_ssl=cfg.auth_grafana_verify_ssl,
         )
         app_state["session_manager"] = session_mgr
         logger.info(
@@ -774,7 +777,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cfg.auth_session_ttl,
         )
     else:
-        logger.info("Auth disabled (auth.enabled=false in config)")
+        logger.warning(
+            "AUTH DISABLED (auth.enabled=false) — the mutation API and WebSocket "
+            "are fully open to anyone who can reach this server. Enable auth "
+            "unless a trusted proxy gates all access."
+        )
 
     logger.info(
         "Loaded %d devices, %d maps, %d links, %d thresholds",

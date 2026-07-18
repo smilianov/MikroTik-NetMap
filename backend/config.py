@@ -84,12 +84,20 @@ class NetMapConfig:
         default_password = api_defaults.get("password", "")
         default_api_type = api_defaults.get("api_type", "rest")
         default_api_port = api_defaults.get("port", None)
+        default_use_ssl = api_defaults.get("use_ssl", False)
+        default_ssl_verify = api_defaults.get("ssl_verify", False)
+        default_ssl_verify_hostname = api_defaults.get("ssl_verify_hostname", True)
+        default_known_hosts = api_defaults.get("known_hosts", "")
 
         self.api_defaults: dict = {
             "username": default_username,
             "password": default_password,
             "api_type": default_api_type,
             "port": default_api_port,
+            "use_ssl": default_use_ssl,
+            "ssl_verify": default_ssl_verify,
+            "ssl_verify_hostname": default_ssl_verify_hostname,
+            "known_hosts": default_known_hosts,
         }
 
         # Color thresholds.

@@ -26,15 +26,27 @@ class Session:
 class SessionManager:
     """In-memory session store with Grafana API validation."""
 
-    def __init__(self, grafana_url: str, session_ttl: int = 28800) -> None:
+    def __init__(
+        self,
+        grafana_url: str,
+        session_ttl: int = 28800,
+        verify_ssl: bool = True,
+    ) -> None:
         self.grafana_url = grafana_url.rstrip("/")
         self.session_ttl = session_ttl
+        self.verify_ssl = verify_ssl
         self._sessions: dict[str, Session] = {}
+        if not verify_ssl:
+            logger.warning(
+                "TLS verification disabled for Grafana at %s — login credentials "
+                "are exposed to MITM attacks (auth.grafana_verify_ssl: false)",
+                self.grafana_url,
+            )
 
     async def login(self, username: str, password: str) -> Session | None:
         """Validate credentials against Grafana API. Returns Session or None."""
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            async with httpx.AsyncClient(verify=self.verify_ssl, timeout=10) as client:
                 resp = await client.get(
                     f"{self.grafana_url}/api/user",
                     auth=(username, password),
@@ -72,7 +84,7 @@ class SessionManager:
     async def _fetch_org_role(self, username: str, password: str) -> str | None:
         """Fetch user's role from Grafana org membership."""
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            async with httpx.AsyncClient(verify=self.verify_ssl, timeout=10) as client:
                 resp = await client.get(
                     f"{self.grafana_url}/api/user/orgs",
                     auth=(username, password),
