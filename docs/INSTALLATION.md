@@ -224,7 +224,7 @@ Real-time MikroTik network topology dashboard (FastAPI + React 19 + vis-network)
 - Backend dev: `cd backend && python -m uvicorn main:app --host 0.0.0.0 --port 8585 --reload`
 - Frontend dev: `cd frontend && npm run dev`
 - Build: `cd frontend && npm run build`
-- Docker: `docker build -t mikrotik-netmap . && docker run -d --name netmap --network host -v $(pwd)/config:/app/config mikrotik-netmap`
+- Docker: `docker build -t mikrotik-netmap . && sudo chown -R 10001:10001 config/ && docker run -d --name netmap -p 127.0.0.1:8585:8585 --cap-add NET_RAW --security-opt no-new-privileges:true -v $(pwd)/config:/app/config mikrotik-netmap`
 
 ## Remote Server
 - Server: 10.0.0.92, SSH user: claude
@@ -300,7 +300,8 @@ sudo apt install -y rsync curl git
 # Allow SSH
 sudo ufw allow 22/tcp
 
-# Allow NetMap web UI
+# Allow NetMap web UI (only needed if you expose it LAN-wide with -p 8585:8585 —
+# the default localhost binding needs no firewall rule)
 sudo ufw allow 8585/tcp
 
 # Allow Grafana (if running on same server for auth)
@@ -352,6 +353,11 @@ cp config/netmap.example.yaml config/netmap.yaml
 
 # Edit the config with your real devices
 nano config/netmap.yaml
+
+# The container runs as non-root UID/GID 10001 (user "netmap") and writes
+# runtime state (custom_positions.json, pinned_devices.json, ...) here —
+# make the config dir owned by that UID:
+sudo chown -R 10001:10001 config/
 ```
 
 See [Section 7](#7-configure-the-application) for configuration details.
@@ -368,21 +374,31 @@ This takes 1-2 minutes. The Dockerfile runs a multi-stage build:
 1. **Stage 1** (Node 22 Alpine): builds the React frontend
 2. **Stage 2** (Python 3.13 Slim): installs backend dependencies, copies built frontend
 
+The runtime stage runs as a dedicated non-root user (`netmap`, UID/GID 10001). The Python interpreter carries the `cap_net_raw` file capability so the privileged ICMP ping monitor works without root, and the image defines a `HEALTHCHECK` against `GET /api/health` (visible as `(healthy)` in `docker ps`).
+
 ### 6.4 Run the container
 
 ```bash
 docker run -d \
   --name netmap \
-  --network host \
+  -p 127.0.0.1:8585:8585 \
+  --cap-add NET_RAW \
+  --security-opt no-new-privileges:true \
   -v /opt/MikroTik-NetMap/config:/app/config \
   --restart unless-stopped \
   mikrotik-netmap:latest
 ```
 
 **Flags explained:**
-- `--network host` — container shares the host network (needed for Grafana auth on same host, and direct access to MikroTik devices)
-- `-v .../config:/app/config` — mounts the config directory so you can edit `netmap.yaml` without rebuilding the image
+- `-p 127.0.0.1:8585:8585` — binds the web UI to localhost only (secure by default). Reach it via SSH tunnel (`ssh -L 8585:localhost:8585 claude@SERVER_IP`) or a reverse proxy. To expose it LAN-wide, use `-p 8585:8585` deliberately — note there is no built-in authentication unless you enable Grafana auth.
+- `--cap-add NET_RAW` — allows the non-root process to open raw ICMP sockets for the privileged ping monitor (icmplib). The image already grants the Python binary `cap_net_raw`, but Docker drops all capabilities by default, so it must be re-added here.
+- `--security-opt no-new-privileges:true` — prevents privilege escalation inside the container.
+- `-v .../config:/app/config` — mounts the config directory so you can edit `netmap.yaml` without rebuilding the image. The host directory must be writable by UID 10001 (see 6.2).
 - `--restart unless-stopped` — auto-start on boot
+
+> **`--network host` alternative:** previous versions of this guide used `--network host` (needed if Grafana for auth runs on the same host and must be reached via `localhost`). It still works — capabilities and the non-root user apply the same way — but the container then shares the host network stack and the UI is reachable on all interfaces. Prefer the default bridge setup with a reverse proxy in front.
+
+> **No NET_RAW available?** If you cannot grant capabilities (e.g. a restricted container runtime), run with `NETMAP_PING_PRIVILEGED=false` in the environment. icmplib then uses unprivileged ICMP datagram sockets instead of raw sockets. On Linux this additionally requires the sysctl `net.ipv4.ping_group_range` to allow the container's group, e.g. add to `docker run`: `--sysctl net.ipv4.ping_group_range="0 2147483647"` (in docker-compose.yml under `sysctls:`).
 
 ### 6.5 Verify it's running
 
@@ -399,7 +415,13 @@ curl http://localhost:8585/api/health
 
 ### 6.6 Access the dashboard
 
-Open in your browser: **http://SERVER_IP:8585**
+The UI is bound to the server's localhost by default. Open an SSH tunnel from your local machine:
+
+```bash
+ssh -L 8585:localhost:8585 claude@SERVER_IP
+```
+
+Then open **http://localhost:8585** in your browser. (If you deliberately exposed it LAN-wide with `-p 8585:8585`, use **http://SERVER_IP:8585** instead.)
 
 ---
 
@@ -480,7 +502,8 @@ For a full configuration reference, see [CONFIGURATION.md](CONFIGURATION.md).
 ### Health check
 
 ```bash
-curl -s http://SERVER_IP:8585/api/health | python3 -m json.tool
+# Run on the server itself (default localhost binding), or via SSH tunnel
+curl -s http://localhost:8585/api/health | python3 -m json.tool
 ```
 
 Expected output:
@@ -541,7 +564,8 @@ rsync -avz \
 ssh claude@SERVER_IP "cd /opt/MikroTik-NetMap && \
   docker build -t mikrotik-netmap:latest . && \
   docker stop netmap && docker rm netmap && \
-  docker run -d --name netmap --network host \
+  docker run -d --name netmap -p 127.0.0.1:8585:8585 \
+    --cap-add NET_RAW --security-opt no-new-privileges:true \
     -v /opt/MikroTik-NetMap/config:/app/config \
     --restart unless-stopped mikrotik-netmap:latest"
 ```
@@ -558,7 +582,8 @@ alias netmap-deploy='cd ~/MikroTik-NetMap && \
   ssh claude@SERVER_IP "cd /opt/MikroTik-NetMap && \
     docker build -t mikrotik-netmap:latest . && \
     docker stop netmap && docker rm netmap && \
-    docker run -d --name netmap --network host \
+    docker run -d --name netmap -p 127.0.0.1:8585:8585 \
+      --cap-add NET_RAW --security-opt no-new-privileges:true \
       -v /opt/MikroTik-NetMap/config:/app/config \
       --restart unless-stopped mikrotik-netmap:latest"'
 ```
@@ -603,16 +628,29 @@ docker logs netmap
 
 # Remove old container and try again
 docker rm -f netmap
-docker run -d --name netmap --network host \
+docker run -d --name netmap -p 127.0.0.1:8585:8585 \
+  --cap-add NET_RAW --security-opt no-new-privileges:true \
   -v /opt/MikroTik-NetMap/config:/app/config \
   mikrotik-netmap:latest
+```
+
+### Config/state file permission errors
+
+The container runs as UID/GID 10001 and the app persists JSON state
+(`custom_positions.json`, `pinned_devices.json`, `device_maps.json`, ...) into
+the mounted `/app/config` directory. If the logs show `PermissionError` when
+saving state, fix host-side ownership:
+
+```bash
+sudo chown -R 10001:10001 /opt/MikroTik-NetMap/config
+docker restart netmap
 ```
 
 ### Devices show as DOWN
 
 - **ICMP blocked:** Ensure the server can ping MikroTik devices: `ping 10.0.0.1`
 - **Firewall:** Check MikroTik firewall rules allow ICMP from the server IP
-- **Docker networking:** With `--network host`, the container uses the host's network stack. Verify the host can reach the devices.
+- **Missing NET_RAW capability:** The privileged ping monitor needs `--cap-add NET_RAW` (already set in `docker-compose.yml`). Without it, pings fail with `Permission denied` socket errors — either add the capability or set `NETMAP_PING_PRIVILEGED=false` (see Section 6.4).
 
 ### Discovery not finding devices
 
@@ -623,7 +661,7 @@ docker run -d --name netmap --network host \
 ### Auth login fails ("Invalid credentials")
 
 - Test Grafana directly: `curl -u admin:admin http://localhost:3000/api/user`
-- If using `--network host`, `localhost:3000` should work. If using `-p 8585:8585`, use the server's IP or Docker network IP instead.
+- If using `--network host`, `localhost:3000` works from inside the container. With the default bridge setup (`-p 127.0.0.1:8585:8585`), use `http://host.docker.internal:3000` (with `--add-host=host.docker.internal:host-gateway`) or the server's LAN IP instead.
 - Reset Grafana admin password: `docker exec GRAFANA_CONTAINER grafana-cli admin reset-admin-password admin`
 
 ### Browser shows old version after update
@@ -681,7 +719,9 @@ nano config/netmap.yaml
 
 # 10. Build and run
 docker build -t mikrotik-netmap:latest .
-docker run -d --name netmap --network host \
+sudo chown -R 10001:10001 config/
+docker run -d --name netmap -p 127.0.0.1:8585:8585 \
+  --cap-add NET_RAW --security-opt no-new-privileges:true \
   -v /opt/MikroTik-NetMap/config:/app/config \
   --restart unless-stopped \
   mikrotik-netmap:latest
@@ -690,4 +730,4 @@ docker run -d --name netmap --network host \
 curl http://localhost:8585/api/health
 ```
 
-Open **http://10.0.0.92:8585** in your browser. Done!
+Open an SSH tunnel (`ssh -L 8585:localhost:8585 claude@10.0.0.92`), then open **http://localhost:8585** in your browser. Done!
