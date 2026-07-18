@@ -108,6 +108,10 @@ class TrafficMonitor:
             api_type=device.api_type,
             timeout=15.0,
             ssh_key_file=device.ssh_key_file,
+            use_ssl=device.use_ssl,
+            ssl_verify=device.ssl_verify,
+            ssl_verify_hostname=device.ssl_verify_hostname,
+            known_hosts=device.known_hosts,
         )
         try:
             interfaces = await client.get_interfaces()

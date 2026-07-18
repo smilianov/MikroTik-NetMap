@@ -37,6 +37,7 @@ class MikroTikSSHClient:
         key_file: str = "",
         port: int = 22,
         timeout: float = 15.0,
+        known_hosts: str = "",
     ) -> None:
         self.host = host
         self.port = port
@@ -44,7 +45,34 @@ class MikroTikSSHClient:
         self.password = password
         self.key_file = key_file
         self.timeout = timeout
+        self.known_hosts = known_hosts
         self._conn = None
+
+    def _resolve_known_hosts(self) -> str | None:
+        """Resolve the known_hosts path for host-key verification.
+
+        Verification is opt-in: only an explicitly configured known_hosts
+        path enables it. The default (empty) and the literal "none" disable
+        verification with a warning — MikroTik device keys are rarely in
+        known_hosts, so verifying by default would break deployments that
+        connected fine before (asyncssh rejects hosts not in the file).
+        """
+        if not self.known_hosts or self.known_hosts.lower() == "none":
+            logger.warning(
+                "SSH host-key verification disabled for %s — credentials are "
+                "exposed to MITM attacks (set known_hosts to enable it)",
+                self.host,
+            )
+            return None
+        if not Path(self.known_hosts).exists():
+            logger.warning(
+                "SSH known_hosts file %s not found — host-key verification "
+                "disabled for %s",
+                self.known_hosts,
+                self.host,
+            )
+            return None
+        return self.known_hosts
 
     async def _connect(self) -> None:
         """Establish SSH connection."""
@@ -54,7 +82,7 @@ class MikroTikSSHClient:
             "host": self.host,
             "port": self.port,
             "username": self.username,
-            "known_hosts": None,  # MikroTik devices rarely in known_hosts
+            "known_hosts": self._resolve_known_hosts(),
             "login_timeout": self.timeout,
         }
 

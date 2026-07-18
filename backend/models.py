@@ -39,6 +39,10 @@ class DeviceConfig(BaseModel):
     ssh_key_file: str = ""  # Path to SSH private key (for api_type: ssh)
     api_type: str = "rest"  # "rest", "classic", or "ssh"
     port: int | None = None
+    use_ssl: bool = False  # Encrypt Classic API connection (api-ssl, port 8729)
+    ssl_verify: bool = False  # Verify TLS certificate (rest/classic)
+    ssl_verify_hostname: bool = True  # Verify TLS hostname (classic)
+    known_hosts: str = ""  # SSH known_hosts path (empty/"none" = no verification)
     profile: str = "edge"
     map: str = "main"
     position: Position = Field(default_factory=Position)

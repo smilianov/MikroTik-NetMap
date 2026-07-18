@@ -1,6 +1,11 @@
 # Configuration Reference
 
-All configuration lives in `config/netmap.yaml`. Passwords and secrets should use `${ENV_VAR}` references — the loader expands them from environment variables (or `.env` file).
+All configuration lives in `config/netmap.yaml`. Passwords and secrets should use `${ENV_VAR}` references — the loader expands them from environment variables (or `.env` file). A `${VAR}` reference to a variable that is not set is a startup error (it names the missing variable), so a typo can't silently become an empty password.
+
+Two escape hatches exist:
+
+- `${VAR:-default}` — substitutes `default` when `VAR` is unset (e.g. `port: ${NETMAP_PORT:-8585}`).
+- `$${VAR}` — a literal `${VAR}` in the value (the `$$` escapes expansion).
 
 ---
 
@@ -39,6 +44,10 @@ api_defaults:
   username: admin
   api_type: classic       # "rest" for HTTPS/443 or "classic" for port 8728
   port: 8728
+  use_ssl: false          # classic: use TLS (api-ssl service, port 8729)
+  ssl_verify: false       # verify device TLS certificate (rest/classic)
+  ssl_verify_hostname: true
+  known_hosts: ""         # ssh: known_hosts path (empty = no verification)
 
 devices:
   - name: core-router
@@ -73,7 +82,9 @@ traffic:
 auth:
   enabled: true
   grafana_url: "http://localhost:3000"
+  grafana_verify_ssl: true
   session_ttl: 28800
+  # cookie_secure: true   # override cookie Secure flag (unset = auto)
 ```
 
 ---
@@ -86,7 +97,7 @@ auth:
 |-----|------|---------|-------------|
 | `host` | string | `0.0.0.0` | Bind address |
 | `port` | int | `8585` | HTTP/WebSocket port |
-| `cors_origins` | list | `["*"]` | Allowed CORS origins |
+| `cors_origins` | list | `["*"]` | Allowed CORS origins (`NETMAP_CORS_ORIGINS` env var takes precedence). A warning is logged when `["*"]` is combined with `auth.enabled: false` |
 
 ### `ping`
 
@@ -135,8 +146,20 @@ Default values applied to all devices that don't override them.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `username` | string | `admin` | RouterOS API username |
-| `api_type` | string | `rest` | `rest` (RouterOS 7.1+) or `classic` (port 8728) |
+| `api_type` | string | `rest` | `rest` (RouterOS 7.1+), `classic` (port 8728), or `ssh` (port 22) |
 | `port` | int | `443` | API port (443 for REST, 8728 for classic) |
+| `use_ssl` | bool | `false` | Encrypt Classic API connections (requires the `api-ssl` service, port 8729). A warning is logged while credentials are sent unencrypted |
+| `ssl_verify` | bool | `false` | Verify the device TLS certificate (REST and Classic-over-TLS). `false` logs a MITM warning; enable with a proper cert for full protection |
+| `ssl_verify_hostname` | bool | `true` | Verify the certificate hostname for Classic-over-TLS |
+| `known_hosts` | string | `""` (disabled) | SSH host-key verification file. Verification is opt-in: set a path to enable it; empty or `none` disables it (logs a warning) |
+
+> **SSH host-key verification is opt-in and OFF by default.** With `known_hosts` empty or `none`, SSH connections are made with **no host-key verification** — only a warning is logged, and credentials are exposed to MITM attacks. For real MITM protection, collect each device's host key and point `known_hosts` at the file:
+>
+> ```bash
+> ssh-keyscan -H <device-ip> >> ~/.ssh/known_hosts   # repeat per device
+> ```
+>
+> When running in Docker, mount the file into the container and use the container path.
 
 ### `devices`
 
@@ -149,8 +172,12 @@ List of MikroTik devices to monitor.
 | `type` | string | no | `router` | `router`, `switch`, `ap`, `server`, `other` |
 | `username` | string | no | from api_defaults | RouterOS API username |
 | `password` | string | no | `""` | RouterOS API password (use `${ENV_VAR}`) |
-| `api_type` | string | no | from api_defaults | `rest` or `classic` |
+| `api_type` | string | no | from api_defaults | `rest`, `classic`, or `ssh` |
 | `port` | int | no | from api_defaults | API port |
+| `use_ssl` | bool | no | from api_defaults | Encrypt Classic API connection (`api-ssl` service) |
+| `ssl_verify` | bool | no | from api_defaults | Verify device TLS certificate (rest/classic) |
+| `ssl_verify_hostname` | bool | no | from api_defaults | Verify TLS hostname (classic) |
+| `known_hosts` | string | no | from api_defaults | SSH known_hosts path (empty/`none` disables host-key verification) |
 | `profile` | string | no | `edge` | Device profile: `ccr`, `crs`, `edge`, `vpn` |
 | `map` | string | no | `main` | Which map this device belongs to |
 | `position` | object | no | `{x: 0, y: 0}` | Position on the map canvas |
@@ -267,14 +294,25 @@ Optional Grafana-based authentication. When enabled, users must log in with vali
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable authentication |
+| `enabled` | bool | `false` | Enable authentication. When `false`, a prominent startup warning is logged — the mutation API and WebSocket are fully open |
 | `grafana_url` | string | `http://localhost:3000` | Grafana instance URL for credential validation |
+| `grafana_verify_ssl` | bool | `true` | Verify Grafana's TLS certificate when validating credentials. Set `false` only for self-signed dev setups (logs a warning) |
 | `session_ttl` | int | `28800` | Session lifetime in seconds (default: 8 hours) |
+| `cookie_secure` | bool | unset (auto) | Force the session cookie `Secure` flag on/off. Unset = auto: `Secure` when the login request arrives over HTTPS (honoring `X-Forwarded-Proto` when `trust_proxy_headers` is on) |
+| `trust_proxy_headers` | bool | `false` | Trust `X-Forwarded-*` headers from a reverse proxy (also used for client IP and cookie `Secure` auto-detection). Only enable behind a proxy that sets them |
+| `proxy_header_user` | string | `X-Auth-User` | Header carrying the authenticated user (proxy auth) |
+| `proxy_header_roles` | string | `X-Auth-Roles` | Header carrying comma-separated roles (proxy auth) |
+
+> **⚠ Warning — `trust_proxy_headers` bypasses auth for direct clients.** When enabled, the app trusts `X-Auth-User` / `X-Auth-Roles` (and `X-Forwarded-*`) from **any** client that can reach it. The app must then be reachable **only** through the proxy — bind it to localhost (`server.host: 127.0.0.1`) or firewall it so only the proxy can connect. If the app is directly exposed, anyone can spoof these headers and bypass authentication entirely.
+
+**Brute-force protection:** `POST /api/auth/login` is rate-limited to 5 **failed** attempts per 60 seconds per client IP (successful logins don't count and reset the counter). Further attempts get HTTP 429 with a `Retry-After` header. The client IP is the socket peer by default; with `trust_proxy_headers: true` it is `X-Real-IP` if set, else the **rightmost** `X-Forwarded-For` entry (leftmost entries are client-controlled and must not be trusted). Entries for IPs that go quiet are evicted after the window expires.
+
+**Multi-worker limitation:** the limiter is per-process and in-memory. With `uvicorn -w N` each worker keeps its own counters (effective limit ≈ 5 × N) and all counters reset on restart. A strict global limit for multi-worker deployments would need a shared store (e.g. Redis) — not currently implemented.
 
 **How it works:**
 1. User enters username/password on the login page
 2. Backend calls `GET {grafana_url}/api/user` with Basic Auth
-3. If Grafana returns 200, a session is created with an HttpOnly cookie
+3. If Grafana returns 200, a session is created with an HttpOnly cookie (`Secure` when the request arrives over HTTPS)
 4. All REST API endpoints (except `/api/auth/*` and `/api/health`) require a valid session
 5. WebSocket connections require the session cookie in the upgrade request
 
@@ -284,7 +322,9 @@ Optional Grafana-based authentication. When enabled, users must log in with vali
 auth:
   enabled: true
   grafana_url: "http://localhost:3000"
+  grafana_verify_ssl: true
   session_ttl: 28800
+  # cookie_secure: true   # override cookie Secure flag (unset = auto)
 ```
 
 > **Note:** Use `--network host` when running in Docker if Grafana is on the same host, so `localhost:3000` is reachable from within the container.
@@ -301,6 +341,7 @@ Set in `.env` file (or system environment):
 |----------|-------------|
 | `NETMAP_PORT` | Docker published port (default: 8585) |
 | `NETMAP_CONFIG` | Config file path override (default: `config/netmap.yaml`) |
+| `NETMAP_CORS_ORIGINS` | Comma-separated CORS origins; overrides `server.cors_origins` |
 | `*_PASS` | Device passwords referenced as `${*_PASS}` in config |
 
 **Security:** Never commit `.env` or `config/netmap.yaml` with real passwords. Both are in `.gitignore`.
@@ -316,4 +357,4 @@ The config loader validates on startup. Common errors:
 | `FileNotFoundError` | Config file missing | Copy `netmap.example.yaml` → `netmap.yaml` |
 | `ValidationError` | Invalid device type | Use: `router`, `switch`, `ap`, `server`, `other` |
 | `ValidationError` | Invalid link type | Use: `wired`, `wireless`, `vpn` |
-| Empty `${VAR}` | Env var not set | Add to `.env` file |
+| `ValueError` naming a variable | `${VAR}` references an unset env var | Set it in `.env` / environment, fix the variable name, or give it a `${VAR:-default}` |

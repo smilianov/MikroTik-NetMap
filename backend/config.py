@@ -17,7 +17,8 @@ from models import (
     ThresholdConfig,
 )
 
-_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_ENV_ESCAPE = "\x00NETMAP_LBRACE\x00"
 
 # Default color thresholds matching the graduated ping system.
 DEFAULT_THRESHOLDS: list[dict[str, Any]] = [
@@ -32,9 +33,27 @@ DEFAULT_THRESHOLDS: list[dict[str, Any]] = [
 
 
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ${VAR} references in strings."""
+    """Recursively expand ${VAR} references in strings.
+
+    Supports ${VAR:-default} (used when VAR is unset) and $$ as an escape
+    for a literal dollar sign ($${VAR} stays "${VAR}"). Raises ValueError
+    if a referenced variable without a default is not set — silently
+    substituting an empty string would turn a typo into an empty password.
+    """
     if isinstance(value, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def _replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name in os.environ:
+                return os.environ[name]
+            default = match.group(2)
+            if default is not None:
+                return default
+            raise ValueError(
+                f"Environment variable '{name}' referenced in config is not set"
+            )
+
+        escaped = value.replace("$${", _ENV_ESCAPE)
+        return _ENV_RE.sub(_replace, escaped).replace(_ENV_ESCAPE, "${")
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -72,12 +91,20 @@ class NetMapConfig:
         default_password = api_defaults.get("password", "")
         default_api_type = api_defaults.get("api_type", "rest")
         default_api_port = api_defaults.get("port", None)
+        default_use_ssl = api_defaults.get("use_ssl", False)
+        default_ssl_verify = api_defaults.get("ssl_verify", False)
+        default_ssl_verify_hostname = api_defaults.get("ssl_verify_hostname", True)
+        default_known_hosts = api_defaults.get("known_hosts", "")
 
         self.api_defaults: dict = {
             "username": default_username,
             "password": default_password,
             "api_type": default_api_type,
             "port": default_api_port,
+            "use_ssl": default_use_ssl,
+            "ssl_verify": default_ssl_verify,
+            "ssl_verify_hostname": default_ssl_verify_hostname,
+            "known_hosts": default_known_hosts,
         }
 
         # Color thresholds.
@@ -95,6 +122,14 @@ class NetMapConfig:
                 d["api_type"] = default_api_type
             if "port" not in d and default_api_port:
                 d["port"] = default_api_port
+            if "use_ssl" not in d:
+                d["use_ssl"] = default_use_ssl
+            if "ssl_verify" not in d:
+                d["ssl_verify"] = default_ssl_verify
+            if "ssl_verify_hostname" not in d:
+                d["ssl_verify_hostname"] = default_ssl_verify_hostname
+            if "known_hosts" not in d:
+                d["known_hosts"] = default_known_hosts
             if "position" in d and isinstance(d["position"], dict):
                 d["position"] = Position(**d["position"])
             self.devices.append(DeviceConfig(**d))
@@ -127,7 +162,9 @@ class NetMapConfig:
         auth = data.get("auth", {})
         self.auth_enabled: bool = auth.get("enabled", False)
         self.auth_grafana_url: str = auth.get("grafana_url", "http://localhost:3000")
+        self.auth_grafana_verify_ssl: bool = auth.get("grafana_verify_ssl", True)
         self.auth_session_ttl: int = auth.get("session_ttl", 28800)  # 8 hours
+        self.auth_cookie_secure: bool | None = auth.get("cookie_secure", None)
         self.auth_trust_headers: bool = auth.get("trust_proxy_headers", False)
         self.auth_header_user: str = auth.get("proxy_header_user", "X-Auth-User")
         self.auth_header_roles: str = auth.get("proxy_header_roles", "X-Auth-Roles")

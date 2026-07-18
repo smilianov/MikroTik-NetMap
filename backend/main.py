@@ -46,6 +46,12 @@ CONFIG_PATH = os.environ.get(
     str(Path(__file__).resolve().parent.parent / "config" / "netmap.yaml"),
 )
 
+# Parse the YAML config once at startup — reused by the lifespan handler and
+# the CORS setup below. A broken config (e.g. an unset ${VAR} reference)
+# fails fast here, exactly once, with the loader's clear error.
+logger.info("Loading config from %s", CONFIG_PATH)
+_STARTUP_CONFIG = NetMapConfig(CONFIG_PATH)
+
 ws_manager = ConnectionManager()
 app_state: dict = {}
 
@@ -703,6 +709,10 @@ def _start_runtime_monitors(cfg: NetMapConfig) -> None:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    ssl_verify=cfg.api_defaults.get("ssl_verify", False),
+                    ssl_verify_hostname=cfg.api_defaults.get("ssl_verify_hostname", True),
+                    known_hosts=cfg.api_defaults.get("known_hosts", ""),
                 ))
         traffic.start()
     app_state["traffic_monitor"] = traffic
@@ -718,10 +728,12 @@ def _apply_auth_config(cfg: NetMapConfig) -> None:
             not existing
             or existing.grafana_url != expected_url
             or existing.session_ttl != cfg.auth_session_ttl
+            or existing.verify_ssl != cfg.auth_grafana_verify_ssl
         ):
             app_state["session_manager"] = SessionManager(
                 grafana_url=cfg.auth_grafana_url,
                 session_ttl=cfg.auth_session_ttl,
+                verify_ssl=cfg.auth_grafana_verify_ssl,
             )
     else:
         app_state.pop("session_manager", None)
@@ -751,9 +763,8 @@ async def _prune_stale_map_state(cfg: NetMapConfig) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start background monitors on app startup, stop on shutdown."""
-    # Load config.
-    logger.info("Loading config from %s", CONFIG_PATH)
-    cfg = NetMapConfig(CONFIG_PATH)
+    # Reuse the config parsed once at startup (see module level).
+    cfg = _STARTUP_CONFIG
     app_state["config"] = cfg
 
     # Auth setup (optional).
@@ -762,6 +773,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session_mgr = SessionManager(
             grafana_url=cfg.auth_grafana_url,
             session_ttl=cfg.auth_session_ttl,
+            verify_ssl=cfg.auth_grafana_verify_ssl,
         )
         app_state["session_manager"] = session_mgr
         logger.info(
@@ -770,7 +782,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cfg.auth_session_ttl,
         )
     else:
-        logger.info("Auth disabled (auth.enabled=false in config)")
+        logger.warning(
+            "AUTH DISABLED (auth.enabled=false) — the mutation API and WebSocket "
+            "are fully open to anyone who can reach this server. Enable auth "
+            "unless a trusted proxy gates all access."
+        )
 
     logger.info(
         "Loaded %d devices, %d maps, %d links, %d thresholds",
@@ -901,6 +917,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    ssl_verify=cfg.api_defaults.get("ssl_verify", False),
+                    ssl_verify_hostname=cfg.api_defaults.get("ssl_verify_hostname", True),
+                    known_hosts=cfg.api_defaults.get("known_hosts", ""),
                 )
                 traffic.add_device(traffic_dev)
         traffic.start()
@@ -977,6 +997,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# CORS — NETMAP_CORS_ORIGINS env var (comma-separated) takes precedence over
+# the YAML server.cors_origins option. Default "*" is kept for dev/portal
+# deployments where nginx gates all access.
+def _resolve_cors_origins() -> list[str]:
+    """Resolve allowed CORS origins: env var > YAML config ('*' default)."""
+    env = os.environ.get("NETMAP_CORS_ORIGINS", "").strip()
+    if env:
+        return [o.strip() for o in env.split(",") if o.strip()]
+
+    origins = _STARTUP_CONFIG.cors_origins
+    if origins == ["*"] and not _STARTUP_CONFIG.auth_enabled:
+        logger.warning(
+            "CORS allows any origin ('*') while auth is disabled — any website "
+            "can call this API from a visitor's browser. Set server.cors_origins "
+            "or NETMAP_CORS_ORIGINS, or enable auth."
+        )
+    return origins
+
+
 app = FastAPI(
     title="MikroTik-NetMap",
     version="0.4.0-beta",
@@ -986,13 +1025,9 @@ app = FastAPI(
 # Auth middleware (must be added before CORS so it runs after CORS in the stack).
 app.add_middleware(AuthMiddleware)
 
-# CORS — configurable via NETMAP_CORS_ORIGINS env var (comma-separated).
-# Default "*" is safe for portal deployments where nginx gates all access.
-_cors_origins_env = os.environ.get("NETMAP_CORS_ORIGINS", "*")
-_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=_resolve_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

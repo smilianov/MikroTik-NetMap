@@ -166,7 +166,19 @@ Enable SSH on the device:
 /ip/service/set ssh disabled=no port=22
 ```
 
-### "Host key verification failed"
-MikroTik-NetMap disables strict host key checking by default. If you see this
-error, the SSH library may have cached an old host key. Delete
-`~/.ssh/known_hosts` entries for the device.
+### Host key verification
+MikroTik-NetMap does **not** verify SSH host keys unless `known_hosts` is
+configured — with it empty (the default) or set to `none`, connections are
+made with **no host-key verification** (only a warning is logged), which
+leaves credentials exposed to MITM attacks.
+
+For real MITM protection, collect each device's host key and point
+`known_hosts` at the file:
+
+```bash
+ssh-keyscan -H <device-ip> >> ~/.ssh/known_hosts   # repeat per device
+```
+
+When running in Docker, mount the file into the container and use the
+container path. If verification is enabled and a device's key legitimately
+changes (e.g. after a reinstall), remove its stale entry from the file.
