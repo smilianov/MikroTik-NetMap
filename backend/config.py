@@ -32,9 +32,21 @@ DEFAULT_THRESHOLDS: list[dict[str, Any]] = [
 
 
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ${VAR} references in strings."""
+    """Recursively expand ${VAR} references in strings.
+
+    Raises ValueError if a referenced variable is not set — silently
+    substituting an empty string would turn a typo into an empty password.
+    """
     if isinstance(value, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def _replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name not in os.environ:
+                raise ValueError(
+                    f"Environment variable '{name}' referenced in config is not set"
+                )
+            return os.environ[name]
+
+        return _ENV_RE.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
