@@ -153,6 +153,14 @@ Default values applied to all devices that don't override them.
 | `ssl_verify_hostname` | bool | `true` | Verify the certificate hostname for Classic-over-TLS |
 | `known_hosts` | string | `""` (disabled) | SSH host-key verification file. Verification is opt-in: set a path to enable it; empty or `none` disables it (logs a warning) |
 
+> **SSH host-key verification is opt-in and OFF by default.** With `known_hosts` empty or `none`, SSH connections are made with **no host-key verification** — only a warning is logged, and credentials are exposed to MITM attacks. For real MITM protection, collect each device's host key and point `known_hosts` at the file:
+>
+> ```bash
+> ssh-keyscan -H <device-ip> >> ~/.ssh/known_hosts   # repeat per device
+> ```
+>
+> When running in Docker, mount the file into the container and use the container path.
+
 ### `devices`
 
 List of MikroTik devices to monitor.
@@ -295,7 +303,11 @@ Optional Grafana-based authentication. When enabled, users must log in with vali
 | `proxy_header_user` | string | `X-Auth-User` | Header carrying the authenticated user (proxy auth) |
 | `proxy_header_roles` | string | `X-Auth-Roles` | Header carrying comma-separated roles (proxy auth) |
 
-**Brute-force protection:** `POST /api/auth/login` is rate-limited to 5 attempts per 60 seconds per client IP. Further attempts get HTTP 429 with a `Retry-After` header. The client IP is the socket peer by default; with `trust_proxy_headers: true` it is `X-Real-IP` if set, else the **rightmost** `X-Forwarded-For` entry (leftmost entries are client-controlled and must not be trusted). Entries for IPs that go quiet are evicted after the window expires.
+> **⚠ Warning — `trust_proxy_headers` bypasses auth for direct clients.** When enabled, the app trusts `X-Auth-User` / `X-Auth-Roles` (and `X-Forwarded-*`) from **any** client that can reach it. The app must then be reachable **only** through the proxy — bind it to localhost (`server.host: 127.0.0.1`) or firewall it so only the proxy can connect. If the app is directly exposed, anyone can spoof these headers and bypass authentication entirely.
+
+**Brute-force protection:** `POST /api/auth/login` is rate-limited to 5 **failed** attempts per 60 seconds per client IP (successful logins don't count and reset the counter). Further attempts get HTTP 429 with a `Retry-After` header. The client IP is the socket peer by default; with `trust_proxy_headers: true` it is `X-Real-IP` if set, else the **rightmost** `X-Forwarded-For` entry (leftmost entries are client-controlled and must not be trusted). Entries for IPs that go quiet are evicted after the window expires.
+
+**Multi-worker limitation:** the limiter is per-process and in-memory. With `uvicorn -w N` each worker keeps its own counters (effective limit ≈ 5 × N) and all counters reset on restart. A strict global limit for multi-worker deployments would need a shared store (e.g. Redis) — not currently implemented.
 
 **How it works:**
 1. User enters username/password on the login page
