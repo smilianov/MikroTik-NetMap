@@ -29,6 +29,7 @@ class LoginRateLimiter:
     def check(self, key: str) -> float:
         """Record one attempt. Returns 0.0 if allowed, else seconds to wait."""
         now = time.monotonic()
+        self._evict_stale(now)
         attempts = [
             t for t in self._attempts.get(key, [])
             if now - t < self.window_seconds
@@ -40,16 +41,34 @@ class LoginRateLimiter:
         self._attempts[key] = attempts
         return 0.0
 
+    def _evict_stale(self, now: float) -> None:
+        """Drop keys with no attempts in the current window (bounds memory)."""
+        stale = [
+            k for k, ts in self._attempts.items()
+            if not ts or now - ts[-1] >= self.window_seconds
+        ]
+        for k in stale:
+            del self._attempts[k]
+
 
 _login_limiter = LoginRateLimiter()
 
 
 def _client_ip(request: Request, cfg: Any) -> str:
-    """Best-effort client IP for rate limiting."""
+    """Best-effort client IP for rate limiting.
+
+    When trusted proxy headers are enabled, only the value our own proxy
+    added is trusted: X-Real-IP if present, else the rightmost
+    X-Forwarded-For entry. Leftmost XFF entries are client-controlled and
+    would let an attacker rotate into a fresh rate-limit bucket.
+    """
     if cfg is not None and getattr(cfg, "auth_trust_headers", False):
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

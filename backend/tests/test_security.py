@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from config import NetMapConfig
 
@@ -257,6 +260,61 @@ def test_rate_limiter_sliding_window():
     assert limiter.check("1.2.3.4") > 0.0
     # Different client IP is unaffected.
     assert limiter.check("5.6.7.8") == 0.0
+
+
+def test_rate_limiter_evicts_stale_keys():
+    from api.auth import LoginRateLimiter
+
+    limiter = LoginRateLimiter(max_attempts=5, window_seconds=60.0)
+    limiter._attempts["stale-ip"] = [time.monotonic() - 120.0]
+
+    assert limiter.check("new-ip") == 0.0
+    assert "stale-ip" not in limiter._attempts
+    assert "new-ip" in limiter._attempts
+
+
+def _request_with_headers(headers: list[tuple[bytes, bytes]]) -> Request:
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": headers,
+        "client": ("10.0.0.1", 1234),
+    })
+
+
+def test_client_ip_ignores_spoofable_leftmost_xff():
+    """Different client-supplied leftmost XFF values must share one bucket.
+
+    Behind nginx (proxy_add_x_forwarded_for) the header is
+    "<client-supplied>, <proxy-added>" — only the rightmost entry and
+    X-Real-IP come from our proxy and can be trusted.
+    """
+    from api.auth import LoginRateLimiter, _client_ip
+
+    cfg = SimpleNamespace(auth_trust_headers=True)
+    spoofed_a = _request_with_headers([(b"x-forwarded-for", b"1.1.1.1, 9.9.9.9")])
+    spoofed_b = _request_with_headers([(b"x-forwarded-for", b"2.2.2.2, 9.9.9.9")])
+
+    assert _client_ip(spoofed_a, cfg) == "9.9.9.9"
+    assert _client_ip(spoofed_b, cfg) == "9.9.9.9"
+
+    # X-Real-IP (set by our proxy) is preferred over XFF entirely.
+    real_ip = _request_with_headers([
+        (b"x-real-ip", b"7.7.7.7"),
+        (b"x-forwarded-for", b"1.1.1.1, 9.9.9.9"),
+    ])
+    assert _client_ip(real_ip, cfg) == "7.7.7.7"
+
+    # Without trust, the socket peer is used (headers ignored).
+    untrusted = SimpleNamespace(auth_trust_headers=False)
+    assert _client_ip(spoofed_a, untrusted) == "10.0.0.1"
+
+    # Both spoofed requests land in the same rate-limit bucket.
+    limiter = LoginRateLimiter(max_attempts=2, window_seconds=60.0)
+    assert limiter.check(_client_ip(spoofed_a, cfg)) == 0.0
+    assert limiter.check(_client_ip(spoofed_b, cfg)) == 0.0
+    assert limiter.check(_client_ip(spoofed_a, cfg)) > 0.0
 
 
 # ----------------------------------------------------------------------

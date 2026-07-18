@@ -290,7 +290,7 @@ Optional Grafana-based authentication. When enabled, users must log in with vali
 | `proxy_header_user` | string | `X-Auth-User` | Header carrying the authenticated user (proxy auth) |
 | `proxy_header_roles` | string | `X-Auth-Roles` | Header carrying comma-separated roles (proxy auth) |
 
-**Brute-force protection:** `POST /api/auth/login` is rate-limited to 5 attempts per 60 seconds per client IP. Further attempts get HTTP 429 with a `Retry-After` header.
+**Brute-force protection:** `POST /api/auth/login` is rate-limited to 5 attempts per 60 seconds per client IP. Further attempts get HTTP 429 with a `Retry-After` header. The client IP is the socket peer by default; with `trust_proxy_headers: true` it is `X-Real-IP` if set, else the **rightmost** `X-Forwarded-For` entry (leftmost entries are client-controlled and must not be trusted). Entries for IPs that go quiet are evicted after the window expires.
 
 **How it works:**
 1. User enters username/password on the login page
