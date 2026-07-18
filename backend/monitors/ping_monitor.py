@@ -31,7 +31,9 @@ class PingMonitor:
         on_update: Callable[[list[PingState]], Any] | None = None,
         privileged: bool | None = None,
     ) -> None:
-        self.devices = devices
+        # Copy the list so dynamically added devices don't leak into the
+        # caller's (config) device list.
+        self.devices = list(devices)
         self.interval = interval
         self.timeout = timeout
         self.on_update = on_update
@@ -50,9 +52,15 @@ class PingMonitor:
         for dev in devices:
             self.states[dev.name] = PingState(device_id=dev.name)
 
-    async def _ping_device(self, device: DeviceConfig) -> PingState:
-        """Ping a single device and return its updated state."""
-        state = self.states[device.name]
+    async def _ping_device(self, device: DeviceConfig) -> PingState | None:
+        """Ping a single device and return its updated state.
+
+        Returns ``None`` if the device was removed while the sweep was
+        in flight, so the caller can silently drop the result.
+        """
+        state = self.states.get(device.name)
+        if state is None:
+            return None
         try:
             result = await async_ping(
                 device.host,
@@ -71,6 +79,9 @@ class PingMonitor:
             logger.debug("Ping %s (%s) failed: %s", device.name, device.host, exc)
             state.is_alive = False
             state.rtt_ms = None
+        # The device may have been removed while the ping was in flight.
+        if self.states.get(device.name) is not state:
+            return None
         return state
 
     async def _sweep(self) -> list[PingState]:
