@@ -19,6 +19,16 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Hosts for which an unencrypted/unverified-connection warning was already
+# logged (clients are re-created every sweep — warn once per host).
+_warned_hosts: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args: Any) -> None:
+    if key not in _warned_hosts:
+        _warned_hosts.add(key)
+        logger.warning(message, *args)
+
 
 class MikroTikClient:
     """Async REST client for RouterOS 7.1+ devices."""
@@ -35,6 +45,13 @@ class MikroTikClient:
         self.host = host
         self.base_url = f"https://{host}:{port}/rest"
         self._auth = (username, password)
+        if not ssl_verify:
+            _warn_once(
+                f"rest:{host}",
+                "TLS certificate verification disabled for REST connection to %s "
+                "— credentials are exposed to MITM attacks (set ssl_verify: true)",
+                host,
+            )
         self._client = httpx.AsyncClient(
             auth=self._auth,
             verify=ssl_verify,
@@ -97,6 +114,8 @@ class MikroTikClassicClient:
         timeout: float = 15.0,
         use_ssl: bool = False,
         plaintext_login: bool = True,
+        ssl_verify: bool = False,
+        ssl_verify_hostname: bool = True,
     ) -> None:
         self.host = host
         self.port = port
@@ -105,8 +124,25 @@ class MikroTikClassicClient:
         self.timeout = timeout
         self.use_ssl = use_ssl
         self.plaintext_login = plaintext_login
+        self.ssl_verify = ssl_verify
+        self.ssl_verify_hostname = ssl_verify_hostname
         self._connection = None
         self._api = None
+        if not use_ssl:
+            _warn_once(
+                f"classic:{host}",
+                "Classic API connection to %s is not encrypted — credentials are "
+                "sent in plaintext (set use_ssl: true with the api-ssl service)",
+                host,
+            )
+        elif not ssl_verify:
+            _warn_once(
+                f"classic:{host}",
+                "TLS certificate verification disabled for Classic API connection "
+                "to %s — credentials are exposed to MITM attacks "
+                "(set ssl_verify: true)",
+                host,
+            )
 
     def _connect_sync(self) -> None:
         """Synchronous connect (run in thread)."""
@@ -118,8 +154,8 @@ class MikroTikClassicClient:
             password=self.password,
             port=self.port,
             use_ssl=self.use_ssl,
-            ssl_verify=False,
-            ssl_verify_hostname=False,
+            ssl_verify=self.ssl_verify,
+            ssl_verify_hostname=self.ssl_verify_hostname,
             plaintext_login=self.plaintext_login,
         )
         self._connection.socket_timeout = self.timeout
@@ -181,6 +217,10 @@ def create_client(
     api_type: str = "rest",
     timeout: float = 15.0,
     ssh_key_file: str = "",
+    use_ssl: bool = False,
+    ssl_verify: bool = False,
+    ssl_verify_hostname: bool = True,
+    known_hosts: str = "",
 ) -> "MikroTikClient | MikroTikClassicClient | MikroTikSSHClient":
     """Factory: create the right client based on api_type."""
     if api_type == "ssh":
@@ -193,6 +233,7 @@ def create_client(
             key_file=ssh_key_file,
             port=port or 22,
             timeout=timeout,
+            known_hosts=known_hosts,
         )
     elif api_type == "classic":
         return MikroTikClassicClient(
@@ -201,6 +242,9 @@ def create_client(
             password=password,
             port=port or 8728,
             timeout=timeout,
+            use_ssl=use_ssl,
+            ssl_verify=ssl_verify,
+            ssl_verify_hostname=ssl_verify_hostname,
         )
     else:
         return MikroTikClient(
@@ -208,5 +252,6 @@ def create_client(
             username=username,
             password=password,
             port=port or 443,
+            ssl_verify=ssl_verify,
             timeout=timeout,
         )

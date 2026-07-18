@@ -37,6 +37,7 @@ class MikroTikSSHClient:
         key_file: str = "",
         port: int = 22,
         timeout: float = 15.0,
+        known_hosts: str = "",
     ) -> None:
         self.host = host
         self.port = port
@@ -44,7 +45,37 @@ class MikroTikSSHClient:
         self.password = password
         self.key_file = key_file
         self.timeout = timeout
+        self.known_hosts = known_hosts
         self._conn = None
+
+    def _resolve_known_hosts(self) -> str | None:
+        """Resolve the known_hosts path for host-key verification.
+
+        Defaults to the user's ~/.ssh/known_hosts. The literal value "none"
+        disables verification explicitly. If the file does not exist,
+        verification is disabled with a warning (asyncssh would reject all
+        hosts otherwise).
+        """
+        path = self.known_hosts or str(Path.home() / ".ssh" / "known_hosts")
+        if path.lower() == "none":
+            logger.warning(
+                "SSH host-key verification disabled for %s (known_hosts: none) "
+                "— credentials are exposed to MITM attacks",
+                self.host,
+            )
+            return None
+        if not Path(path).exists():
+            logger.warning(
+                "SSH known_hosts file %s not found — host-key verification "
+                "disabled for %s; add the device key to enable it "
+                "(e.g. ssh-keyscan %s >> %s)",
+                path,
+                self.host,
+                self.host,
+                path,
+            )
+            return None
+        return path
 
     async def _connect(self) -> None:
         """Establish SSH connection."""
@@ -54,7 +85,7 @@ class MikroTikSSHClient:
             "host": self.host,
             "port": self.port,
             "username": self.username,
-            "known_hosts": None,  # MikroTik devices rarely in known_hosts
+            "known_hosts": self._resolve_known_hosts(),
             "login_timeout": self.timeout,
         }
 

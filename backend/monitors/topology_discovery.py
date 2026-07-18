@@ -313,6 +313,10 @@ class TopologyDiscovery:
             password=self._api_defaults.get("password", ""),
             api_type=self._api_defaults.get("api_type", "rest"),
             port=self._api_defaults.get("port"),
+            use_ssl=self._api_defaults.get("use_ssl", False),
+            ssl_verify=self._api_defaults.get("ssl_verify", False),
+            ssl_verify_hostname=self._api_defaults.get("ssl_verify_hostname", True),
+            known_hosts=self._api_defaults.get("known_hosts", ""),
         )
 
     def add_queryable_device(self, name: str, host: str) -> None:
@@ -414,6 +418,10 @@ class TopologyDiscovery:
             api_type=device.api_type,
             timeout=15.0,
             ssh_key_file=device.ssh_key_file,
+            use_ssl=device.use_ssl,
+            ssl_verify=device.ssl_verify,
+            ssl_verify_hostname=device.ssl_verify_hostname,
+            known_hosts=device.known_hosts,
         )
         try:
             neighbors = await client.get_neighbors()

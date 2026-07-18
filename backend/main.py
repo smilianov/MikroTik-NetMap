@@ -703,6 +703,10 @@ def _start_runtime_monitors(cfg: NetMapConfig) -> None:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    ssl_verify=cfg.api_defaults.get("ssl_verify", False),
+                    ssl_verify_hostname=cfg.api_defaults.get("ssl_verify_hostname", True),
+                    known_hosts=cfg.api_defaults.get("known_hosts", ""),
                 ))
         traffic.start()
     app_state["traffic_monitor"] = traffic
@@ -901,6 +905,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    ssl_verify=cfg.api_defaults.get("ssl_verify", False),
+                    ssl_verify_hostname=cfg.api_defaults.get("ssl_verify_hostname", True),
+                    known_hosts=cfg.api_defaults.get("known_hosts", ""),
                 )
                 traffic.add_device(traffic_dev)
         traffic.start()

@@ -107,6 +107,14 @@ class NetMapConfig:
                 d["api_type"] = default_api_type
             if "port" not in d and default_api_port:
                 d["port"] = default_api_port
+            if "use_ssl" not in d:
+                d["use_ssl"] = default_use_ssl
+            if "ssl_verify" not in d:
+                d["ssl_verify"] = default_ssl_verify
+            if "ssl_verify_hostname" not in d:
+                d["ssl_verify_hostname"] = default_ssl_verify_hostname
+            if "known_hosts" not in d:
+                d["known_hosts"] = default_known_hosts
             if "position" in d and isinstance(d["position"], dict):
                 d["position"] = Position(**d["position"])
             self.devices.append(DeviceConfig(**d))
@@ -139,7 +147,9 @@ class NetMapConfig:
         auth = data.get("auth", {})
         self.auth_enabled: bool = auth.get("enabled", False)
         self.auth_grafana_url: str = auth.get("grafana_url", "http://localhost:3000")
+        self.auth_grafana_verify_ssl: bool = auth.get("grafana_verify_ssl", True)
         self.auth_session_ttl: int = auth.get("session_ttl", 28800)  # 8 hours
+        self.auth_cookie_secure: bool | None = auth.get("cookie_secure", None)
         self.auth_trust_headers: bool = auth.get("trust_proxy_headers", False)
         self.auth_header_user: str = auth.get("proxy_header_user", "X-Auth-User")
         self.auth_header_roles: str = auth.get("proxy_header_roles", "X-Auth-Roles")
