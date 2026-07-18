@@ -10,7 +10,12 @@ import { hideDevice, unhideDevice } from '../api/visibility';
 import { BlacklistPanel } from './BlacklistPanel';
 
 export function Sidebar() {
-  const { devices, pingData, thresholds, hiddenDevices, selectDevice, selectedDevice } = useNetworkStore();
+  const devices = useNetworkStore((s) => s.devices);
+  const pingData = useNetworkStore((s) => s.pingData);
+  const thresholds = useNetworkStore((s) => s.thresholds);
+  const hiddenDevices = useNetworkStore((s) => s.hiddenDevices);
+  const selectDevice = useNetworkStore((s) => s.selectDevice);
+  const selectedDevice = useNetworkStore((s) => s.selectedDevice);
   const [search, setSearch] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [showBlacklist, setShowBlacklist] = useState(false);

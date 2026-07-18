@@ -9,7 +9,15 @@ import { formatRtt, formatBandwidth } from '../utils/formatters';
 import { hideDevice as apiHide, unhideDevice as apiUnhide, blacklistDevice as apiBlacklist, pinDevice as apiPin, unpinDevice as apiUnpin, moveDeviceToMap as apiMoveToMap } from '../api/visibility';
 
 export function DevicePanel() {
-  const { devices, pingData, trafficData, thresholds, selectedDevice, selectDevice, hiddenDevices, maps, currentMap } = useNetworkStore();
+  const devices = useNetworkStore((s) => s.devices);
+  const pingData = useNetworkStore((s) => s.pingData);
+  const trafficData = useNetworkStore((s) => s.trafficData);
+  const thresholds = useNetworkStore((s) => s.thresholds);
+  const selectedDevice = useNetworkStore((s) => s.selectedDevice);
+  const selectDevice = useNetworkStore((s) => s.selectDevice);
+  const hiddenDevices = useNetworkStore((s) => s.hiddenDevices);
+  const maps = useNetworkStore((s) => s.maps);
+  const currentMap = useNetworkStore((s) => s.currentMap);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   if (!selectedDevice) return null;
