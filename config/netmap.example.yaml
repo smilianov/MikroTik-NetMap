@@ -5,6 +5,8 @@
 server:
   host: 0.0.0.0
   port: 8585
+  # Allowed CORS origins. NETMAP_CORS_ORIGINS (comma-separated) overrides this.
+  # A warning is logged when "*" is combined with auth.enabled: false.
   cors_origins: ["*"]
 
 # Ping monitor settings
@@ -40,6 +42,17 @@ thresholds:
 # api_type: "rest" (HTTPS port 443, RouterOS 7.1+),
 #           "classic" (port 8728, RouterOS 6.49+),
 #           "ssh" (port 22, any RouterOS — supports SSH key auth)
+#
+# TLS/SSH verification options (all can be overridden per device):
+#   use_ssl: true             — encrypt Classic API traffic (needs the api-ssl
+#                               service on the router, usually port 8729)
+#   ssl_verify: true          — verify the device TLS certificate (rest/classic).
+#                               Default false because RouterOS REST commonly uses
+#                               self-signed certs; a warning is logged while off.
+#   ssl_verify_hostname: true — verify the certificate hostname (classic).
+#   known_hosts: ""           — SSH host-key verification file; empty uses
+#                               ~/.ssh/known_hosts, "none" disables verification
+#                               (logs a warning).
 api_defaults:
   username: admin
   api_type: classic          # "rest", "classic", or "ssh"
@@ -109,3 +122,16 @@ discovery:
   map_label: Auto Discovery
   auto_add_devices: false   # if true, unknown neighbors are added to the map
   auto_add_links: true      # if true, discovered links appear on the map
+
+# Optional Grafana-based authentication (disabled by default).
+# WARNING: with auth disabled, the mutation API and WebSocket are fully open —
+# a prominent startup warning is logged.
+# auth:
+#   enabled: true
+#   grafana_url: "http://localhost:3000"
+#   grafana_verify_ssl: true    # verify Grafana's TLS certificate (default: true)
+#   session_ttl: 28800          # session lifetime in seconds (8 hours)
+#   # cookie_secure: true       # force session cookie Secure flag
+#                               # (unset = auto from request scheme)
+#   trust_proxy_headers: false  # trust X-Forwarded-* from a reverse proxy
+# Login is rate-limited to 5 attempts per 60s per client IP (HTTP 429).
