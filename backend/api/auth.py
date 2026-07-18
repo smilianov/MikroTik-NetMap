@@ -19,27 +19,44 @@ def set_app_state(state: dict[str, Any]) -> None:
 
 
 class LoginRateLimiter:
-    """In-memory per-client-IP sliding-window limiter for login attempts."""
+    """In-memory per-client-IP sliding-window limiter for login attempts.
+
+    Per-process only: with multiple uvicorn workers each worker keeps its
+    own counters, and all counters reset on restart.
+    """
 
     def __init__(self, max_attempts: int = 5, window_seconds: float = 60.0) -> None:
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self._attempts: dict[str, list[float]] = {}
 
-    def check(self, key: str) -> float:
-        """Record one attempt. Returns 0.0 if allowed, else seconds to wait."""
+    def is_limited(self, key: str) -> float:
+        """Return seconds to wait if the client is over the limit, else 0.0."""
         now = time.monotonic()
         self._evict_stale(now)
-        attempts = [
-            t for t in self._attempts.get(key, [])
-            if now - t < self.window_seconds
-        ]
+        attempts = self._current_attempts(key, now)
         if len(attempts) >= self.max_attempts:
             self._attempts[key] = attempts
             return max(1.0, self.window_seconds - (now - attempts[0]))
+        return 0.0
+
+    def record_failure(self, key: str) -> None:
+        """Record one failed login attempt for the client."""
+        now = time.monotonic()
+        self._evict_stale(now)
+        attempts = self._current_attempts(key, now)
         attempts.append(now)
         self._attempts[key] = attempts
-        return 0.0
+
+    def reset(self, key: str) -> None:
+        """Clear the client's counter (called on successful login)."""
+        self._attempts.pop(key, None)
+
+    def _current_attempts(self, key: str, now: float) -> list[float]:
+        return [
+            t for t in self._attempts.get(key, [])
+            if now - t < self.window_seconds
+        ]
 
     def _evict_stale(self, now: float) -> None:
         """Drop keys with no attempts in the current window (bounds memory)."""
@@ -102,7 +119,8 @@ async def login(body: LoginBody, request: Request, response: Response):
         return {"ok": True, "message": "Auth disabled"}
 
     cfg = _app_state.get("config")
-    retry_after = _login_limiter.check(_client_ip(request, cfg))
+    client_key = _client_ip(request, cfg)
+    retry_after = _login_limiter.is_limited(client_key)
     if retry_after > 0:
         response.status_code = 429
         response.headers["Retry-After"] = str(int(retry_after))
@@ -110,8 +128,12 @@ async def login(body: LoginBody, request: Request, response: Response):
 
     session = await session_mgr.login(body.username, body.password)
     if not session:
+        _login_limiter.record_failure(client_key)
         response.status_code = 401
         return {"ok": False, "error": "Invalid credentials"}
+
+    # Successful login: clear any accumulated failures for this client.
+    _login_limiter.reset(client_key)
 
     response.set_cookie(
         key="netmap_session",

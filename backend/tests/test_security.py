@@ -255,11 +255,15 @@ def test_rate_limiter_sliding_window():
     from api.auth import LoginRateLimiter
 
     limiter = LoginRateLimiter(max_attempts=2, window_seconds=60.0)
-    assert limiter.check("1.2.3.4") == 0.0
-    assert limiter.check("1.2.3.4") == 0.0
-    assert limiter.check("1.2.3.4") > 0.0
+    assert limiter.is_limited("1.2.3.4") == 0.0
+    limiter.record_failure("1.2.3.4")
+    limiter.record_failure("1.2.3.4")
+    assert limiter.is_limited("1.2.3.4") > 0.0
     # Different client IP is unaffected.
-    assert limiter.check("5.6.7.8") == 0.0
+    assert limiter.is_limited("5.6.7.8") == 0.0
+    # Reset (successful login) clears the counter.
+    limiter.reset("1.2.3.4")
+    assert limiter.is_limited("1.2.3.4") == 0.0
 
 
 def test_rate_limiter_evicts_stale_keys():
@@ -268,7 +272,7 @@ def test_rate_limiter_evicts_stale_keys():
     limiter = LoginRateLimiter(max_attempts=5, window_seconds=60.0)
     limiter._attempts["stale-ip"] = [time.monotonic() - 120.0]
 
-    assert limiter.check("new-ip") == 0.0
+    limiter.record_failure("new-ip")
     assert "stale-ip" not in limiter._attempts
     assert "new-ip" in limiter._attempts
 
@@ -312,9 +316,60 @@ def test_client_ip_ignores_spoofable_leftmost_xff():
 
     # Both spoofed requests land in the same rate-limit bucket.
     limiter = LoginRateLimiter(max_attempts=2, window_seconds=60.0)
-    assert limiter.check(_client_ip(spoofed_a, cfg)) == 0.0
-    assert limiter.check(_client_ip(spoofed_b, cfg)) == 0.0
-    assert limiter.check(_client_ip(spoofed_a, cfg)) > 0.0
+    limiter.record_failure(_client_ip(spoofed_a, cfg))
+    limiter.record_failure(_client_ip(spoofed_b, cfg))
+    assert limiter.is_limited(_client_ip(spoofed_a, cfg)) > 0.0
+
+
+def test_successful_logins_are_not_rate_limited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import api.auth as auth_api
+
+    auth_api._login_limiter._attempts.clear()
+    client, main_module = _make_client(tmp_path, monkeypatch, AUTH_CONFIG)
+    with client:
+        main_module.app_state["session_manager"] = _FakeSessionManager(succeed=True)
+        # Well above max_attempts — successes never count toward the limit.
+        for _ in range(7):
+            resp = client.post(
+                "/api/auth/login", json={"username": "u", "password": "p"}
+            )
+            assert resp.status_code == 200
+
+
+def test_failed_login_counter_resets_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import api.auth as auth_api
+
+    auth_api._login_limiter._attempts.clear()
+    client, main_module = _make_client(tmp_path, monkeypatch, AUTH_CONFIG)
+    with client:
+        mgr = _FakeSessionManager(succeed=False)
+        main_module.app_state["session_manager"] = mgr
+
+        for _ in range(4):
+            resp = client.post(
+                "/api/auth/login", json={"username": "u", "password": "p"}
+            )
+            assert resp.status_code == 401
+
+        # A success clears the accumulated failures.
+        mgr._succeed = True
+        resp = client.post("/api/auth/login", json={"username": "u", "password": "p"})
+        assert resp.status_code == 200
+
+        # The next failures start a fresh window: 5 more before the 429.
+        mgr._succeed = False
+        for _ in range(5):
+            resp = client.post(
+                "/api/auth/login", json={"username": "u", "password": "p"}
+            )
+            assert resp.status_code == 401
+
+        resp = client.post("/api/auth/login", json={"username": "u", "password": "p"})
+        assert resp.status_code == 429
 
 
 # ----------------------------------------------------------------------
