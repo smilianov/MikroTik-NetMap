@@ -4,9 +4,20 @@ services:
     container_name: mikrotik-netmap
     restart: unless-stopped
     ports:
-      - "${NETMAP_PORT:-8585}:8585"
+      # Localhost-only by default. To expose the UI on the LAN, change to
+      # "${NETMAP_PORT:-8585}:8585" deliberately (ideally behind a reverse
+      # proxy and/or firewall rule).
+      - "127.0.0.1:${NETMAP_PORT:-8585}:8585"
     volumes:
+      # The container runs as UID/GID 10001 (user "netmap"). Make the host
+      # config dir writable by it once: chown -R 10001:10001 ./config
       - "${NETMAP_CONFIG_DIR:-./config}:/app/config"
+    cap_add:
+      # Raw ICMP sockets for the privileged ping monitor (icmplib).
+      # Set NETMAP_PING_PRIVILEGED=false below if this can't be granted.
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
     environment:

@@ -1,0 +1,41 @@
+# Keep the Docker build context small and free of secrets.
+# Nothing the Dockerfile COPYs (frontend/, backend/, config/netmap.example.yaml)
+# may be excluded here.
+
+# VCS / repo cruft
+.git/
+.gitignore
+.github/
+
+# Secrets and local environment files
+.env
+.env.*
+
+# Local config and runtime state (volume-mounted at runtime instead)
+config/netmap.yaml
+config/netmap.demo.yaml
+config/*.json
+
+# Node / Python build artifacts (rebuilt inside the image)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Dev-only files (not needed to build the image)
+docs/
+ansible/
+scripts/
+*.md
+.dockerignore
+docker-compose.yml
+
+# OS / IDE noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
