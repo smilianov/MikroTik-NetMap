@@ -42,7 +42,7 @@ class DeviceConfig(BaseModel):
     use_ssl: bool = False  # Encrypt Classic API connection (api-ssl, port 8729)
     ssl_verify: bool = False  # Verify TLS certificate (rest/classic)
     ssl_verify_hostname: bool = True  # Verify TLS hostname (classic)
-    known_hosts: str = ""  # SSH known_hosts path (empty = ~/.ssh/known_hosts)
+    known_hosts: str = ""  # SSH known_hosts path (empty/"none" = no verification)
     profile: str = "edge"
     map: str = "main"
     position: Position = Field(default_factory=Position)

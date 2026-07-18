@@ -50,9 +50,9 @@ thresholds:
 #                               Default false because RouterOS REST commonly uses
 #                               self-signed certs; a warning is logged while off.
 #   ssl_verify_hostname: true — verify the certificate hostname (classic).
-#   known_hosts: ""           — SSH host-key verification file; empty uses
-#                               ~/.ssh/known_hosts, "none" disables verification
-#                               (logs a warning).
+#   known_hosts: ""           — SSH host-key verification file (opt-in). Set a
+#                               path to enable verification; empty or "none"
+#                               disables it (logs a warning).
 api_defaults:
   username: admin
   api_type: classic          # "rest", "classic", or "ssh"

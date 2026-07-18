@@ -42,7 +42,7 @@ api_defaults:
   use_ssl: false          # classic: use TLS (api-ssl service, port 8729)
   ssl_verify: false       # verify device TLS certificate (rest/classic)
   ssl_verify_hostname: true
-  known_hosts: ""         # ssh: known_hosts path (empty = ~/.ssh/known_hosts)
+  known_hosts: ""         # ssh: known_hosts path (empty = no verification)
 
 devices:
   - name: core-router
@@ -146,7 +146,7 @@ Default values applied to all devices that don't override them.
 | `use_ssl` | bool | `false` | Encrypt Classic API connections (requires the `api-ssl` service, port 8729). A warning is logged while credentials are sent unencrypted |
 | `ssl_verify` | bool | `false` | Verify the device TLS certificate (REST and Classic-over-TLS). `false` logs a MITM warning; enable with a proper cert for full protection |
 | `ssl_verify_hostname` | bool | `true` | Verify the certificate hostname for Classic-over-TLS |
-| `known_hosts` | string | `~/.ssh/known_hosts` | SSH host-key verification file. Set to `none` to disable verification (logs a warning) |
+| `known_hosts` | string | `""` (disabled) | SSH host-key verification file. Verification is opt-in: set a path to enable it; empty or `none` disables it (logs a warning) |
 
 ### `devices`
 
@@ -164,7 +164,7 @@ List of MikroTik devices to monitor.
 | `use_ssl` | bool | no | from api_defaults | Encrypt Classic API connection (`api-ssl` service) |
 | `ssl_verify` | bool | no | from api_defaults | Verify device TLS certificate (rest/classic) |
 | `ssl_verify_hostname` | bool | no | from api_defaults | Verify TLS hostname (classic) |
-| `known_hosts` | string | no | from api_defaults | SSH known_hosts path (`none` disables host-key verification) |
+| `known_hosts` | string | no | from api_defaults | SSH known_hosts path (empty/`none` disables host-key verification) |
 | `profile` | string | no | `edge` | Device profile: `ccr`, `crs`, `edge`, `vpn` |
 | `map` | string | no | `main` | Which map this device belongs to |
 | `position` | object | no | `{x: 0, y: 0}` | Position on the map canvas |

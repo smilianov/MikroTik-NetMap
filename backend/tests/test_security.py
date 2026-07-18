@@ -127,6 +127,12 @@ def test_create_client_forwards_tls_options():
 def test_ssh_known_hosts_defaults_and_override(tmp_path: Path):
     from mikrotik.ssh_client import MikroTikSSHClient
 
+    # Default (no known_hosts configured): verification disabled, same
+    # behavior as before the hardening PR — MikroTik keys are rarely in
+    # the user's known_hosts, so verifying by default breaks deployments.
+    assert MikroTikSSHClient("10.0.0.1")._resolve_known_hosts() is None
+
+    # Explicit path to an existing file enables verification.
     kh = tmp_path / "known_hosts"
     kh.write_text("", encoding="utf-8")
     client = MikroTikSSHClient("10.0.0.1", known_hosts=str(kh))
