@@ -1,9 +1,10 @@
-fastapi>=0.115
-uvicorn[standard]>=0.34
-websockets>=14.0
-pyyaml>=6.0
-httpx>=0.28
-icmplib>=3.0
-pydantic>=2.10
-RouterOS-api>=0.17
-asyncssh>=2.20
+# Pinned versions — bump deliberately after testing (no upper bounds needed).
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+websockets==16.1.1
+pyyaml==6.0.3
+httpx==0.28.1
+icmplib==3.0.4
+pydantic==2.13.4
+RouterOS-api==0.21.0
+asyncssh==2.24.0

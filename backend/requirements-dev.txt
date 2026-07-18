@@ -1,0 +1,2 @@
+# Development/test-only dependencies — install alongside requirements.txt.
+pytest==9.1.1
