@@ -992,6 +992,34 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# CORS — NETMAP_CORS_ORIGINS env var (comma-separated) takes precedence over
+# the YAML server.cors_origins option. Default "*" is kept for dev/portal
+# deployments where nginx gates all access.
+def _resolve_cors_origins() -> list[str]:
+    """Resolve allowed CORS origins: env var > YAML config > '*'."""
+    cfg: NetMapConfig | None = None
+    try:
+        cfg = NetMapConfig(CONFIG_PATH)
+    except Exception as exc:
+        logger.warning("Cannot read config for CORS/auth check: %s", exc)
+
+    env = os.environ.get("NETMAP_CORS_ORIGINS", "").strip()
+    if env:
+        origins = [o.strip() for o in env.split(",") if o.strip()]
+    elif cfg is not None:
+        origins = cfg.cors_origins
+    else:
+        origins = ["*"]
+
+    if origins == ["*"] and cfg is not None and not cfg.auth_enabled:
+        logger.warning(
+            "CORS allows any origin ('*') while auth is disabled — any website "
+            "can call this API from a visitor's browser. Set server.cors_origins "
+            "or NETMAP_CORS_ORIGINS, or enable auth."
+        )
+    return origins
+
+
 app = FastAPI(
     title="MikroTik-NetMap",
     version="0.4.0-beta",
@@ -1001,13 +1029,9 @@ app = FastAPI(
 # Auth middleware (must be added before CORS so it runs after CORS in the stack).
 app.add_middleware(AuthMiddleware)
 
-# CORS — configurable via NETMAP_CORS_ORIGINS env var (comma-separated).
-# Default "*" is safe for portal deployments where nginx gates all access.
-_cors_origins_env = os.environ.get("NETMAP_CORS_ORIGINS", "*")
-_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=_resolve_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
