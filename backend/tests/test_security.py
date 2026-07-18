@@ -103,6 +103,28 @@ api_defaults:
     assert NetMapConfig(cfg).api_defaults["password"] == "s3cret"
 
 
+def test_main_fails_fast_once_on_missing_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A config with an unset ${VAR} aborts startup at import, exactly once."""
+    monkeypatch.delenv("NETMAP_UNSET_SECRET", raising=False)
+    bad = _write_config(tmp_path, BASE_CONFIG + """
+api_defaults:
+  username: admin
+  password: "${NETMAP_UNSET_SECRET}"
+""")
+    monkeypatch.setenv("NETMAP_CONFIG", str(bad))
+
+    # Fails at import time (or at reload if already imported) — exactly once.
+    with pytest.raises(ValueError, match="NETMAP_UNSET_SECRET"):
+        importlib.reload(importlib.import_module("main"))
+
+    # Reload with a valid config so later tests see a working module.
+    good = _write_config(tmp_path, BASE_CONFIG)
+    monkeypatch.setenv("NETMAP_CONFIG", str(good))
+    importlib.reload(importlib.import_module("main"))
+
+
 # ----------------------------------------------------------------------
 # TLS option wiring
 # ----------------------------------------------------------------------

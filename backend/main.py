@@ -46,6 +46,12 @@ CONFIG_PATH = os.environ.get(
     str(Path(__file__).resolve().parent.parent / "config" / "netmap.yaml"),
 )
 
+# Parse the YAML config once at startup — reused by the lifespan handler and
+# the CORS setup below. A broken config (e.g. an unset ${VAR} reference)
+# fails fast here, exactly once, with the loader's clear error.
+logger.info("Loading config from %s", CONFIG_PATH)
+_STARTUP_CONFIG = NetMapConfig(CONFIG_PATH)
+
 ws_manager = ConnectionManager()
 app_state: dict = {}
 
@@ -757,9 +763,8 @@ async def _prune_stale_map_state(cfg: NetMapConfig) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start background monitors on app startup, stop on shutdown."""
-    # Load config.
-    logger.info("Loading config from %s", CONFIG_PATH)
-    cfg = NetMapConfig(CONFIG_PATH)
+    # Reuse the config parsed once at startup (see module level).
+    cfg = _STARTUP_CONFIG
     app_state["config"] = cfg
 
     # Auth setup (optional).
@@ -996,22 +1001,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # the YAML server.cors_origins option. Default "*" is kept for dev/portal
 # deployments where nginx gates all access.
 def _resolve_cors_origins() -> list[str]:
-    """Resolve allowed CORS origins: env var > YAML config > '*'."""
-    cfg: NetMapConfig | None = None
-    try:
-        cfg = NetMapConfig(CONFIG_PATH)
-    except Exception as exc:
-        logger.warning("Cannot read config for CORS/auth check: %s", exc)
-
+    """Resolve allowed CORS origins: env var > YAML config ('*' default)."""
     env = os.environ.get("NETMAP_CORS_ORIGINS", "").strip()
     if env:
-        origins = [o.strip() for o in env.split(",") if o.strip()]
-    elif cfg is not None:
-        origins = cfg.cors_origins
-    else:
-        origins = ["*"]
+        return [o.strip() for o in env.split(",") if o.strip()]
 
-    if origins == ["*"] and cfg is not None and not cfg.auth_enabled:
+    origins = _STARTUP_CONFIG.cors_origins
+    if origins == ["*"] and not _STARTUP_CONFIG.auth_enabled:
         logger.warning(
             "CORS allows any origin ('*') while auth is disabled — any website "
             "can call this API from a visitor's browser. Set server.cors_origins "
