@@ -17,6 +17,8 @@ export function BlacklistPanel({ onClose }: BlacklistPanelProps) {
     try {
       const data = await getBlacklisted();
       setEntries(data);
+    } catch (err) {
+      console.error('Failed to load blacklist:', err);
     } finally {
       setLoading(false);
     }
@@ -27,8 +29,12 @@ export function BlacklistPanel({ onClose }: BlacklistPanelProps) {
   }, []);
 
   const handleUnblacklist = async (id: string) => {
-    await unblacklistDevice(id);
-    setEntries((prev) => prev.filter((e) => e.id !== id));
+    try {
+      await unblacklistDevice(id);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+    } catch (err) {
+      console.error('Failed to unblacklist device:', err);
+    }
   };
 
   return (

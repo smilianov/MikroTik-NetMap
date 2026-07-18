@@ -6,6 +6,14 @@ import { fetchWithAuth as fetch } from './fetchWithAuth';
 
 const API_BASE = '/api/links';
 
+/** Throw a descriptive error when a response is not OK. */
+async function ensureOk(res: Response, action: string): Promise<void> {
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `${action} failed with HTTP ${res.status}`);
+  }
+}
+
 export interface ManualLink {
   id: string;
   from: string;
@@ -17,6 +25,7 @@ export interface ManualLink {
 
 export async function getManualLinks(): Promise<ManualLink[]> {
   const res = await fetch(`${API_BASE}/manual`);
+  await ensureOk(res, 'Fetch manual links');
   return res.json();
 }
 
@@ -38,13 +47,11 @@ export async function createLink(
       map,
     }),
   });
+  await ensureOk(res, 'Create link');
   return res.json();
 }
 
 export async function deleteLink(linkId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/${encodeURIComponent(linkId)}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Delete failed with HTTP ${res.status}`);
-  }
+  await ensureOk(res, 'Delete link');
 }
