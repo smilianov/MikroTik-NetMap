@@ -17,7 +17,8 @@ from models import (
     ThresholdConfig,
 )
 
-_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_ENV_ESCAPE = "\x00NETMAP_LBRACE\x00"
 
 # Default color thresholds matching the graduated ping system.
 DEFAULT_THRESHOLDS: list[dict[str, Any]] = [
@@ -34,19 +35,25 @@ DEFAULT_THRESHOLDS: list[dict[str, Any]] = [
 def _expand_env(value: Any) -> Any:
     """Recursively expand ${VAR} references in strings.
 
-    Raises ValueError if a referenced variable is not set — silently
+    Supports ${VAR:-default} (used when VAR is unset) and $$ as an escape
+    for a literal dollar sign ($${VAR} stays "${VAR}"). Raises ValueError
+    if a referenced variable without a default is not set — silently
     substituting an empty string would turn a typo into an empty password.
     """
     if isinstance(value, str):
         def _replace(match: re.Match[str]) -> str:
             name = match.group(1)
-            if name not in os.environ:
-                raise ValueError(
-                    f"Environment variable '{name}' referenced in config is not set"
-                )
-            return os.environ[name]
+            if name in os.environ:
+                return os.environ[name]
+            default = match.group(2)
+            if default is not None:
+                return default
+            raise ValueError(
+                f"Environment variable '{name}' referenced in config is not set"
+            )
 
-        return _ENV_RE.sub(_replace, value)
+        escaped = value.replace("$${", _ENV_ESCAPE)
+        return _ENV_RE.sub(_replace, escaped).replace(_ENV_ESCAPE, "${")
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):

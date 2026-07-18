@@ -2,6 +2,11 @@
 
 All configuration lives in `config/netmap.yaml`. Passwords and secrets should use `${ENV_VAR}` references — the loader expands them from environment variables (or `.env` file). A `${VAR}` reference to a variable that is not set is a startup error (it names the missing variable), so a typo can't silently become an empty password.
 
+Two escape hatches exist:
+
+- `${VAR:-default}` — substitutes `default` when `VAR` is unset (e.g. `port: ${NETMAP_PORT:-8585}`).
+- `$${VAR}` — a literal `${VAR}` in the value (the `$$` escapes expansion).
+
 ---
 
 ## Full Example
@@ -340,4 +345,4 @@ The config loader validates on startup. Common errors:
 | `FileNotFoundError` | Config file missing | Copy `netmap.example.yaml` → `netmap.yaml` |
 | `ValidationError` | Invalid device type | Use: `router`, `switch`, `ap`, `server`, `other` |
 | `ValidationError` | Invalid link type | Use: `wired`, `wireless`, `vpn` |
-| `ValueError` naming a variable | `${VAR}` references an unset env var | Set it in `.env` / environment, or fix the variable name |
+| `ValueError` naming a variable | `${VAR}` references an unset env var | Set it in `.env` / environment, fix the variable name, or give it a `${VAR:-default}` |

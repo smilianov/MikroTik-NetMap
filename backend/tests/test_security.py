@@ -103,6 +103,36 @@ api_defaults:
     assert NetMapConfig(cfg).api_defaults["password"] == "s3cret"
 
 
+def test_env_expansion_supports_default_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cfg = _write_config(tmp_path, BASE_CONFIG + """
+api_defaults:
+  username: admin
+  password: "${NETMAP_OPTIONAL_SECRET:-fallback123}"
+""")
+    # Unset variable falls back to the default.
+    monkeypatch.delenv("NETMAP_OPTIONAL_SECRET", raising=False)
+    assert NetMapConfig(cfg).api_defaults["password"] == "fallback123"
+
+    # Set variable wins over the default.
+    monkeypatch.setenv("NETMAP_OPTIONAL_SECRET", "real")
+    assert NetMapConfig(cfg).api_defaults["password"] == "real"
+
+
+def test_env_expansion_escapes_literal_dollar_brace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # $${VAR} is a literal, not a reference — unset var must not raise.
+    monkeypatch.delenv("NETMAP_MISSING_SECRET", raising=False)
+    cfg = _write_config(tmp_path, BASE_CONFIG + """
+api_defaults:
+  username: admin
+  password: "$${NETMAP_MISSING_SECRET}"
+""")
+    assert NetMapConfig(cfg).api_defaults["password"] == "${NETMAP_MISSING_SECRET}"
+
+
 def test_main_fails_fast_once_on_missing_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
