@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { Network, DataSet } from 'vis-network/standalone';
+import { Network, DataSet, type Node as VisNode, type Edge as VisEdge, type Options as VisOptions } from 'vis-network/standalone';
 import { useNetworkStore, type DeviceInfo, type LinkInfo } from '../stores/networkStore';
 import { getPingColor, getTrafficColor } from '../utils/colorThresholds';
 import { getDeviceImageUrl, preloadDeviceImages } from '../utils/deviceIcons';
@@ -58,7 +58,7 @@ function linkEdgeDetails(link: LinkInfo) {
   };
 }
 
-function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
+function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]): MapEdge[] {
   const visibleIds = new Set(devices.map((d) => d.id));
   const byChild = new Map<string, string>();
 
@@ -96,6 +96,18 @@ function buildHierarchyEdges(devices: DeviceInfo[], links: LinkInfo[]) {
   });
 }
 
+/** Node data stored in the vis DataSet. */
+interface MapNode extends VisNode {
+  id: string;
+}
+
+/** Edge data stored in the vis DataSet. */
+interface MapEdge extends VisEdge {
+  id: string;
+  from: string;
+  to: string;
+}
+
 /** Particle state for traffic animation on a single edge. */
 interface Particle {
   t: number; // 0..1 position along edge
@@ -105,8 +117,8 @@ interface Particle {
 export function NetworkMap() {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
-  const nodesRef = useRef<DataSet<any>>(new DataSet());
-  const edgesRef = useRef<DataSet<any>>(new DataSet());
+  const nodesRef = useRef<DataSet<MapNode>>(new DataSet<MapNode>());
+  const edgesRef = useRef<DataSet<MapEdge>>(new DataSet<MapEdge>());
   const animFrameRef = useRef<number>(0);
 
   // Particle animation state.
@@ -134,8 +146,19 @@ export function NetworkMap() {
   const hiddenDevicesRef = useRef(useNetworkStore.getState().hiddenDevices);
   const currentMapRef = useRef(useNetworkStore.getState().currentMap);
 
-  const { devices, links, pingData, trafficData, thresholds, hiddenDevices, selectDevice, sidebarVisible, toggleSidebar, wsConnected, currentMap, maps, setCurrentMap } =
-    useNetworkStore();
+  const devices = useNetworkStore((s) => s.devices);
+  const links = useNetworkStore((s) => s.links);
+  const pingData = useNetworkStore((s) => s.pingData);
+  const trafficData = useNetworkStore((s) => s.trafficData);
+  const thresholds = useNetworkStore((s) => s.thresholds);
+  const hiddenDevices = useNetworkStore((s) => s.hiddenDevices);
+  const selectDevice = useNetworkStore((s) => s.selectDevice);
+  const sidebarVisible = useNetworkStore((s) => s.sidebarVisible);
+  const toggleSidebar = useNetworkStore((s) => s.toggleSidebar);
+  const wsConnected = useNetworkStore((s) => s.wsConnected);
+  const currentMap = useNetworkStore((s) => s.currentMap);
+  const maps = useNetworkStore((s) => s.maps);
+  const setCurrentMap = useNetworkStore((s) => s.setCurrentMap);
 
   // Context menu state.
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; deviceId: string } | null>(null);
@@ -153,7 +176,7 @@ export function NetworkMap() {
   const [hierarchicalLayout, setHierarchicalLayout] = useState(false);
   const hierarchicalRef = useRef(false);
   const hierarchicalMountedRef = useRef(false); // Skip first render
-  const savedManualEdgesRef = useRef<any[]>([]); // Original edges for restoring manual mode
+  const savedManualEdgesRef = useRef<MapEdge[]>([]); // Original edges for restoring manual mode
 
   // Map tab editing state.
   const [editingMap, setEditingMap] = useState<string | null>(null);
@@ -217,9 +240,177 @@ export function NetworkMap() {
     preloadDeviceImages(colors);
   }, [thresholds]);
 
+  // Register vis-network event handlers and the container contextmenu listener
+  // on a network instance. Shared by the init effect and the layout-recreate
+  // effect so the two can't drift apart. Returns a cleanup function that removes
+  // the DOM listener (vis-network's own handlers die with network.destroy()).
+  const registerNetworkHandlers = useCallback((net: Network, container: HTMLDivElement) => {
+    // Double-click → select device for detail panel.
+    net.on('doubleClick', (params) => {
+      if (params.nodes.length > 0) {
+        selectDevice(params.nodes[0]);
+      }
+    });
+
+    // Single click → deselect or handle link mode.
+    net.on('click', (params) => {
+      setEdgeContextMenu(null);
+      setTabMenu(null);
+      if (linkModeRef.current && params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        if (!linkFirstDeviceRef.current) {
+          setLinkFirstDevice(nodeId);
+        } else if (nodeId !== linkFirstDeviceRef.current) {
+          setLinkDialog({ from: linkFirstDeviceRef.current, to: nodeId });
+          setLinkFirstDevice(null);
+          setLinkMode(false);
+        }
+        return;
+      }
+      if (params.nodes.length === 0) {
+        selectDevice(null);
+      }
+    });
+
+    // Right-click → context menu (native DOM event for reliability).
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = container.getBoundingClientRect();
+      const domX = e.clientX - rect.left;
+      const domY = e.clientY - rect.top;
+      const nodeId = net.getNodeAt({ x: domX, y: domY });
+      if (nodeId) {
+        setContextMenu({ x: e.clientX, y: e.clientY, deviceId: nodeId as string });
+        setEdgeContextMenu(null);
+        setTabMenu(null);
+        return;
+      }
+      const edgeId = net.getEdgeAt({ x: domX, y: domY });
+      if (edgeId) {
+        const curLinks = linksRef.current;
+        const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
+        if (link?.manual) {
+          setEdgeContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            edgeId: edgeId as string,
+            linkId: link.id || edgeId as string,
+            isManual: true,
+          });
+          setContextMenu(null);
+        }
+      }
+    };
+    container.addEventListener('contextmenu', handleContextMenu);
+
+    // Pause animation loop during drag for smooth performance.
+    net.on('dragStart', (params) => {
+      if (params.nodes.length > 0) {
+        isDraggingRef.current = true;
+      }
+    });
+
+    // Drag-to-reposition → send position update via WebSocket.
+    net.on('dragEnd', (params) => {
+      isDraggingRef.current = false;
+      if (hierarchicalRef.current) return;
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0] as string;
+        const pos = net.getPosition(nodeId);
+        sendWsMessage({
+          type: 'position_update',
+          device_id: nodeId,
+          position: { x: Math.round(pos.x), y: Math.round(pos.y) },
+        });
+      }
+    });
+
+    // Particle animation: draw traffic flow on top of edges.
+    net.on('afterDrawing', (ctx: CanvasRenderingContext2D) => {
+      const now = performance.now();
+      const dt = (now - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = now;
+
+      const curLinks = linksRef.current;
+      const curTraffic = trafficDataRef.current;
+
+      for (const link of curLinks) {
+        const edgeId = `${link.from}-${link.to}`;
+        const fromDev = link.from.split(':')[0];
+        const toDev = link.to.split(':')[0];
+        const fromIf = link.from.split(':').slice(1).join(':');
+        const toIf = link.to.split(':').slice(1).join(':');
+
+        // Get traffic for this link from either side.
+        const fromTraffic = curTraffic[fromDev]?.[fromIf];
+        const toTraffic = curTraffic[toDev]?.[toIf];
+        const maxBps = Math.max(
+          fromTraffic?.txBps || 0,
+          fromTraffic?.rxBps || 0,
+          toTraffic?.txBps || 0,
+          toTraffic?.rxBps || 0,
+        );
+
+        if (maxBps <= 0) {
+          particlesRef.current.delete(edgeId);
+          continue;
+        }
+
+        // Get node positions in network coordinates.
+        let fromPos: { x: number; y: number };
+        let toPos: { x: number; y: number };
+        try {
+          fromPos = net.getPosition(fromDev);
+          toPos = net.getPosition(toDev);
+        } catch {
+          continue;
+        }
+
+        // Compute utilisation for particle count and speed.
+        const speedBps = link.speed * 1_000_000;
+        const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
+        const targetCount = Math.min(5, Math.max(1, Math.ceil(utilPct / 20)));
+        const particleSpeed = 0.3 + Math.min(utilPct / 100, 1) * 0.7;
+        const color = getTrafficColor(utilPct);
+
+        // Manage particle pool for this edge.
+        let particles = particlesRef.current.get(edgeId) || [];
+        while (particles.length < targetCount) {
+          particles.push({ t: Math.random(), speed: particleSpeed });
+        }
+        if (particles.length > targetCount) {
+          particles = particles.slice(0, targetCount);
+        }
+
+        // Draw particles.
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.85;
+        for (const p of particles) {
+          p.t += p.speed * dt;
+          if (p.t > 1) p.t -= 1;
+
+          const x = fromPos.x + (toPos.x - fromPos.x) * p.t;
+          const y = fromPos.y + (toPos.y - fromPos.y) * p.t;
+
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        particlesRef.current.set(edgeId, particles);
+      }
+    });
+
+    return () => container.removeEventListener('contextmenu', handleContextMenu);
+  }, [selectDevice]);
+
   // Initialize vis-network on mount.
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
     const options = {
       physics: {
@@ -266,179 +457,21 @@ export function NetworkMap() {
     };
 
     const network = new Network(
-      containerRef.current,
+      container,
       { nodes: nodesRef.current, edges: edgesRef.current },
       options,
     );
 
-    // Double-click → select device for detail panel.
-    network.on('doubleClick', (params) => {
-      if (params.nodes.length > 0) {
-        selectDevice(params.nodes[0]);
-      }
-    });
-
-    // Single click → deselect or handle link mode.
-    network.on('click', (params) => {
-      setEdgeContextMenu(null);
-      setTabMenu(null);
-      if (linkModeRef.current && params.nodes.length > 0) {
-        const nodeId = params.nodes[0] as string;
-        if (!linkFirstDeviceRef.current) {
-          setLinkFirstDevice(nodeId);
-        } else if (nodeId !== linkFirstDeviceRef.current) {
-          setLinkDialog({ from: linkFirstDeviceRef.current, to: nodeId });
-          setLinkFirstDevice(null);
-          setLinkMode(false);
-        }
-        return;
-      }
-      if (params.nodes.length === 0) {
-        selectDevice(null);
-      }
-    });
-
-    // Right-click → context menu (native DOM event for reliability).
-    const canvas = containerRef.current!;
-    const handleContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = canvas.getBoundingClientRect();
-      const domX = e.clientX - rect.left;
-      const domY = e.clientY - rect.top;
-      const nodeId = network.getNodeAt({ x: domX, y: domY });
-      if (nodeId) {
-        setContextMenu({ x: e.clientX, y: e.clientY, deviceId: nodeId as string });
-        setEdgeContextMenu(null);
-        setTabMenu(null);
-        return;
-      }
-      const edgeId = network.getEdgeAt({ x: domX, y: domY });
-      if (edgeId) {
-        const curLinks = linksRef.current;
-        const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
-        if (link?.manual) {
-          setEdgeContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            edgeId: edgeId as string,
-            linkId: link.id || edgeId as string,
-            isManual: true,
-          });
-          setContextMenu(null);
-        }
-      }
-    };
-    canvas.addEventListener('contextmenu', handleContextMenu);
-
-    // Pause animation loop during drag for smooth performance.
-    network.on('dragStart', (params) => {
-      if (params.nodes.length > 0) {
-        isDraggingRef.current = true;
-      }
-    });
-
-    // Drag-to-reposition → send position update via WebSocket.
-    network.on('dragEnd', (params) => {
-      isDraggingRef.current = false;
-      if (hierarchicalRef.current) return;
-      if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0] as string;
-        const pos = network.getPosition(nodeId);
-        sendWsMessage({
-          type: 'position_update',
-          device_id: nodeId,
-          position: { x: Math.round(pos.x), y: Math.round(pos.y) },
-        });
-      }
-    });
-
-    // Particle animation: draw traffic flow on top of edges.
-    network.on('afterDrawing', (ctx: CanvasRenderingContext2D) => {
-      const now = performance.now();
-      const dt = (now - lastFrameTimeRef.current) / 1000;
-      lastFrameTimeRef.current = now;
-
-      const curLinks = linksRef.current;
-      const curTraffic = trafficDataRef.current;
-
-      for (const link of curLinks) {
-        const edgeId = `${link.from}-${link.to}`;
-        const fromDev = link.from.split(':')[0];
-        const toDev = link.to.split(':')[0];
-        const fromIf = link.from.split(':').slice(1).join(':');
-        const toIf = link.to.split(':').slice(1).join(':');
-
-        // Get traffic for this link from either side.
-        const fromTraffic = curTraffic[fromDev]?.[fromIf];
-        const toTraffic = curTraffic[toDev]?.[toIf];
-        const maxBps = Math.max(
-          fromTraffic?.txBps || 0,
-          fromTraffic?.rxBps || 0,
-          toTraffic?.txBps || 0,
-          toTraffic?.rxBps || 0,
-        );
-
-        if (maxBps <= 0) {
-          particlesRef.current.delete(edgeId);
-          continue;
-        }
-
-        // Get node positions in network coordinates.
-        let fromPos: { x: number; y: number };
-        let toPos: { x: number; y: number };
-        try {
-          fromPos = network.getPosition(fromDev);
-          toPos = network.getPosition(toDev);
-        } catch {
-          continue;
-        }
-
-        // Compute utilisation for particle count and speed.
-        const speedBps = link.speed * 1_000_000;
-        const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
-        const targetCount = Math.min(5, Math.max(1, Math.ceil(utilPct / 20)));
-        const particleSpeed = 0.3 + Math.min(utilPct / 100, 1) * 0.7;
-        const color = getTrafficColor(utilPct);
-
-        // Manage particle pool for this edge.
-        let particles = particlesRef.current.get(edgeId) || [];
-        while (particles.length < targetCount) {
-          particles.push({ t: Math.random(), speed: particleSpeed });
-        }
-        if (particles.length > targetCount) {
-          particles = particles.slice(0, targetCount);
-        }
-
-        // Draw particles.
-        ctx.save();
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.85;
-        for (const p of particles) {
-          p.t += p.speed * dt;
-          if (p.t > 1) p.t -= 1;
-
-          const x = fromPos.x + (toPos.x - fromPos.x) * p.t;
-          const y = fromPos.y + (toPos.y - fromPos.y) * p.t;
-
-          ctx.beginPath();
-          ctx.arc(x, y, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-
-        particlesRef.current.set(edgeId, particles);
-      }
-    });
+    const removeHandlers = registerNetworkHandlers(network, container);
 
     networkRef.current = network;
 
     return () => {
-      canvas.removeEventListener('contextmenu', handleContextMenu);
+      removeHandlers();
       cancelAnimationFrame(animFrameRef.current);
       network.destroy();
     };
-  }, [selectDevice]);
+  }, [registerNetworkHandlers]);
 
   // Toggle drag mode when lock state changes.
   useEffect(() => {
@@ -498,7 +531,7 @@ export function NetworkMap() {
     const visIds = new Set(visDevices.map((d) => d.id));
 
     // Create fresh DataSets.
-    const newNodes = new DataSet(
+    const newNodes = new DataSet<MapNode>(
       hierarchicalLayout
         ? visDevices.map((dev) => {
             const ping = pingDataRef.current[dev.id];
@@ -512,7 +545,7 @@ export function NetworkMap() {
               title: `${dev.name} (${dev.host})\nType: ${dev.type}\nProfile: ${dev.profile}`,
             };
           })
-        : nodeData.map((n: any) => {
+        : nodeData.map((n) => {
             // Restore saved manual positions from store.
             const dev = devicesRef.current.find((d) => d.id === n.id);
             return dev ? { ...n, x: dev.position.x, y: dev.position.y } : n;
@@ -524,7 +557,7 @@ export function NetworkMap() {
     // In hierarchical mode, build parent→child edges from the `parent` field,
     // falling back to directed topology links when parent metadata is absent.
     // In manual mode, restore the saved discovery edges.
-    const newEdges = new DataSet(
+    const newEdges = new DataSet<MapEdge>(
       hierarchicalLayout
         ? buildHierarchyEdges(visDevices, visibleLinkEdges)
         : savedManualEdgesRef.current,
@@ -533,7 +566,7 @@ export function NetworkMap() {
     edgesRef.current = newEdges;
 
     // Build options for the new network.
-    const baseOptions: any = {
+    const baseOptions: VisOptions = {
       interaction: {
         hover: true,
         tooltipDelay: 200,
@@ -571,106 +604,8 @@ export function NetworkMap() {
 
     const net = new Network(container, { nodes: newNodes, edges: newEdges }, baseOptions);
 
-    // Re-register event listeners (same as init effect).
-    net.on('doubleClick', (params) => {
-      if (params.nodes.length > 0) selectDevice(params.nodes[0]);
-    });
-    net.on('click', (params) => {
-      setEdgeContextMenu(null);
-      setTabMenu(null);
-      if (linkModeRef.current && params.nodes.length > 0) {
-        const nodeId = params.nodes[0] as string;
-        if (!linkFirstDeviceRef.current) {
-          setLinkFirstDevice(nodeId);
-        } else if (nodeId !== linkFirstDeviceRef.current) {
-          setLinkDialog({ from: linkFirstDeviceRef.current, to: nodeId });
-          setLinkFirstDevice(null);
-          setLinkMode(false);
-        }
-        return;
-      }
-      if (params.nodes.length === 0) selectDevice(null);
-    });
-    net.on('dragStart', (params) => {
-      if (params.nodes.length > 0) isDraggingRef.current = true;
-    });
-    net.on('dragEnd', (params) => {
-      isDraggingRef.current = false;
-      if (hierarchicalRef.current) return;
-      if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0] as string;
-        const pos = net.getPosition(nodeId);
-        sendWsMessage({
-          type: 'position_update',
-          device_id: nodeId,
-          position: { x: Math.round(pos.x), y: Math.round(pos.y) },
-        });
-      }
-    });
-    net.on('afterDrawing', (ctx: CanvasRenderingContext2D) => {
-      const now = performance.now();
-      const dt = (now - lastFrameTimeRef.current) / 1000;
-      lastFrameTimeRef.current = now;
-      const curLinks = linksRef.current;
-      const curTraffic = trafficDataRef.current;
-      for (const link of curLinks) {
-        const edgeId = `${link.from}-${link.to}`;
-        const fromDev = link.from.split(':')[0];
-        const toDev = link.to.split(':')[0];
-        const fromIf = link.from.split(':').slice(1).join(':');
-        const toIf = link.to.split(':').slice(1).join(':');
-        const fromTraffic = curTraffic[fromDev]?.[fromIf];
-        const toTraffic = curTraffic[toDev]?.[toIf];
-        const maxBps = Math.max(fromTraffic?.txBps || 0, fromTraffic?.rxBps || 0, toTraffic?.txBps || 0, toTraffic?.rxBps || 0);
-        if (maxBps <= 0) { particlesRef.current.delete(edgeId); continue; }
-        let fromPos: { x: number; y: number }, toPos: { x: number; y: number };
-        try { fromPos = net.getPosition(fromDev); toPos = net.getPosition(toDev); } catch { continue; }
-        const speedBps = link.speed * 1_000_000;
-        const utilPct = speedBps > 0 ? (maxBps / speedBps) * 100 : 0;
-        const targetCount = Math.min(5, Math.max(1, Math.ceil(utilPct / 20)));
-        const particleSpeed = 0.3 + Math.min(utilPct / 100, 1) * 0.7;
-        const color = getTrafficColor(utilPct);
-        let particles = particlesRef.current.get(edgeId) || [];
-        while (particles.length < targetCount) particles.push({ t: Math.random(), speed: particleSpeed });
-        if (particles.length > targetCount) particles = particles.slice(0, targetCount);
-        ctx.save(); ctx.fillStyle = color; ctx.globalAlpha = 0.85;
-        for (const p of particles) { p.t += p.speed * dt; if (p.t > 1) p.t -= 1; const x = fromPos.x + (toPos.x - fromPos.x) * p.t; const y = fromPos.y + (toPos.y - fromPos.y) * p.t; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); }
-        ctx.restore();
-        particlesRef.current.set(edgeId, particles);
-      }
-    });
-
-    // Re-register right-click context menu on the container (lost when network recreated).
-    const handleCtx = (e: MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = container.getBoundingClientRect();
-      const domX = e.clientX - rect.left;
-      const domY = e.clientY - rect.top;
-      const nodeId = net.getNodeAt({ x: domX, y: domY });
-      if (nodeId) {
-        setContextMenu({ x: e.clientX, y: e.clientY, deviceId: nodeId as string });
-        setEdgeContextMenu(null);
-        setTabMenu(null);
-        return;
-      }
-      const edgeId = net.getEdgeAt({ x: domX, y: domY });
-      if (edgeId) {
-        const curLinks = linksRef.current;
-        const link = curLinks.find((l) => `${l.from}-${l.to}` === edgeId);
-        if (link?.manual) {
-          setEdgeContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            edgeId: edgeId as string,
-            linkId: link.id || edgeId as string,
-            isManual: true,
-          });
-          setContextMenu(null);
-        }
-      }
-    };
-    container.addEventListener('contextmenu', handleCtx);
+    // Re-register event listeners (shared with the init effect).
+    const removeHandlers = registerNetworkHandlers(net, container);
 
     // Clear caches (new DataSets).
     lastNodeLabelsRef.current.clear();
@@ -693,7 +628,10 @@ export function NetworkMap() {
         net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
       }, 50);
     }
-  }, [hierarchicalLayout, currentMap, selectDevice]);
+
+    // Remove the contextmenu listener when the network is recreated or unmounted.
+    return removeHandlers;
+  }, [hierarchicalLayout, currentMap, registerNetworkHandlers]);
 
   // Sync devices → vis nodes when config changes (filter hidden devices).
   // Skip entirely in hierarchical mode — DataSet mutations restart layout computation.
@@ -728,7 +666,7 @@ export function NetworkMap() {
 
       const label = `<b>${dev.name}</b>\n${dev.host}\n${statusLine}`;
 
-      const nodeData: any = {
+      const nodeData: MapNode = {
         id: dev.id,
         label,
         shape: 'image',
