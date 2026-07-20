@@ -93,6 +93,8 @@ docker compose up -d
 
 Open **http://localhost:8585** — single container serves both backend and frontend.
 
+The container runs as a non-root user with only the `NET_RAW` capability (needed by the privileged ICMP ping monitor) and binds to localhost by default. To expose the UI on your LAN, change the `ports:` entry in `docker-compose.yml` to `"${NETMAP_PORT:-8585}:8585"` — see the comments in that file.
+
 ### 3. Run in development
 
 **Terminal 1 — Backend:**
@@ -123,7 +125,7 @@ Backend smoke tests:
 
 ```bash
 cd backend
-pip install -r requirements.txt pytest
+pip install -r requirements.txt -r requirements-dev.txt
 PYTHONDONTWRITEBYTECODE=1 pytest -q tests -o cache_dir=/tmp/pytest-netmap
 ```
 
@@ -155,16 +157,22 @@ cp config/netmap.example.yaml config/netmap.yaml
 
 # Build and run
 docker build -t mikrotik-netmap:latest .
+
+# The container runs as non-root UID/GID 10001 — make the config dir writable by it
+sudo chown -R 10001:10001 config/
+
 docker run -d --name netmap \
-  --network host \
+  -p 127.0.0.1:8585:8585 \
+  --cap-add NET_RAW \
+  --security-opt no-new-privileges:true \
   -v $(pwd)/config:/app/config \
   --restart unless-stopped \
   mikrotik-netmap:latest
 ```
 
-> **Note:** Use `--network host` if you need the container to reach a Grafana instance on the same host (for authentication) or if your MikroTik devices are on the host network. Otherwise use `-p 8585:8585`.
+> **Note:** The port binding above is localhost-only by default — reach the UI via SSH tunnel (`ssh -L 8585:localhost:8585 user@server`) or a reverse proxy. To expose it on the LAN directly, use `-p 8585:8585` instead (deliberately — there is no built-in auth unless you enable Grafana auth). Use `--network host` (instead of `-p`) only if you need the container to reach a Grafana instance via `localhost` on the same host. `--cap-add NET_RAW` is required for the privileged ICMP ping monitor; if you cannot grant it, set `NETMAP_PING_PRIVILEGED=false` to fall back to icmplib's unprivileged mode (see docs/INSTALLATION.md).
 
-Open **http://server-ip:8585** in your browser.
+Open **http://server-ip:8585** in your browser (or **http://localhost:8585** with the default binding/tunnel).
 
 ### Update an existing deployment
 
@@ -178,7 +186,8 @@ rsync -avz --exclude='node_modules/' --exclude='.venv/' --exclude='__pycache__/'
 ssh user@server "cd /opt/MikroTik-NetMap && \
   docker build -t mikrotik-netmap:latest . && \
   docker stop netmap && docker rm netmap && \
-  docker run -d --name netmap --network host \
+  docker run -d --name netmap -p 127.0.0.1:8585:8585 \
+    --cap-add NET_RAW --security-opt no-new-privileges:true \
     -v /opt/MikroTik-NetMap/config:/app/config \
     --restart unless-stopped mikrotik-netmap:latest"
 ```
