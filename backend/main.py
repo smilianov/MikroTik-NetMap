@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -395,9 +396,7 @@ def _build_all_devices_list() -> list[dict[str, Any]]:
     if not cfg:
         return []
 
-    # Build lookup for discovered devices (needed because PingMonitor.add_device
-    # mutates cfg.devices via shared reference, so cfg.devices may contain
-    # discovered devices too).
+    # Lookup of discovered devices for parent/discovered flags below.
     discovered_map = discovery.discovered_devices if discovery else {}
     configured_parents = _configured_parent_map()
 
@@ -1148,12 +1147,24 @@ class _SetMapBody(_BaseModel):
     map: str
 
 
+def _is_known_device(device_id: str) -> bool:
+    """Check whether a device exists in config or discovered devices."""
+    cfg = app_state.get("config")
+    if cfg and any(d.name == device_id for d in cfg.devices):
+        return True
+    discovery = app_state.get("topology_discovery")
+    return bool(discovery and device_id in discovery.discovered_devices)
+
+
 @app.put("/api/devices/{device_id}/map")
 async def set_device_map(device_id: str, body: _SetMapBody):
     """Change a device's map assignment."""
     cfg = app_state.get("config")
     if not cfg:
         raise HTTPException(status_code=500, detail="Config not loaded")
+
+    if not _is_known_device(device_id):
+        raise HTTPException(status_code=404, detail=f"Unknown device: {device_id}")
 
     valid_maps = _get_all_map_names()
     if body.map not in valid_maps:
@@ -1417,12 +1428,16 @@ async def websocket_endpoint(ws: WebSocket):
                     device_id = msg.get("device_id")
                     position = msg.get("position")
                     if device_id and position:
+                        # Ignore updates for unknown devices.
+                        if not _is_known_device(device_id):
+                            continue
+                        x = float(position["x"])
+                        y = float(position["y"])
+                        if not (math.isfinite(x) and math.isfinite(y)):
+                            continue
                         # Persist to custom positions file.
                         custom_pos = app_state.get("custom_positions", {})
-                        custom_pos[device_id] = {
-                            "x": float(position["x"]),
-                            "y": float(position["y"]),
-                        }
+                        custom_pos[device_id] = {"x": x, "y": y}
                         app_state["custom_positions"] = custom_pos
                         await _save_custom_positions(custom_pos)
 

@@ -357,7 +357,7 @@ class TopologyDiscovery:
             logger.warning("Failed to load discovery persistence file", exc_info=True)
 
     def _save_persistence(self) -> None:
-        """Save discovered topology to JSON file."""
+        """Save discovered topology to JSON file (synchronous)."""
         try:
             data = {
                 "devices": [
@@ -374,6 +374,10 @@ class TopologyDiscovery:
                 json.dump(data, f, indent=2, default=str)
         except Exception:
             logger.warning("Failed to save discovery persistence", exc_info=True)
+
+    async def _save_persistence_async(self) -> None:
+        """Save discovered topology off the event loop."""
+        await asyncio.to_thread(self._save_persistence)
 
     def _infer_hierarchy_from_persisted(self) -> None:
         """Rebuild parent-child hierarchy from persisted discovered devices.
@@ -992,8 +996,8 @@ class TopologyDiscovery:
                 if name not in added_names
             ]
 
-        # Persist to disk.
-        self._save_persistence()
+        # Persist to disk (off the event loop).
+        await self._save_persistence_async()
 
         return {
             "added_devices": added_devices,
@@ -1009,8 +1013,8 @@ class TopologyDiscovery:
         self._device_positions.pop(device_id, None)
         self._configured_names.discard(device_id)
 
-        # Also remove from queryable device list (cfg.devices shared reference).
-        self._devices[:] = [d for d in self._devices if d.name != device_id]
+        # Also remove from the queryable device list.
+        self.devices[:] = [d for d in self.devices if d.name != device_id]
 
         # Remove all links involving this device.
         for link_id in list(self.discovered_links.keys()):
