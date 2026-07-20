@@ -7,8 +7,16 @@ import { useAuthStore } from '../stores/authStore';
 import { devicesForMap } from '../utils/mapVisibility';
 
 export function StatusBar() {
-  const { devices, links, pingData, thresholds, hiddenDevices, currentMap, maps } = useNetworkStore();
-  const { authEnabled, username, logout } = useAuthStore();
+  const devices = useNetworkStore((s) => s.devices);
+  const links = useNetworkStore((s) => s.links);
+  const pingData = useNetworkStore((s) => s.pingData);
+  const thresholds = useNetworkStore((s) => s.thresholds);
+  const hiddenDevices = useNetworkStore((s) => s.hiddenDevices);
+  const currentMap = useNetworkStore((s) => s.currentMap);
+  const maps = useNetworkStore((s) => s.maps);
+  const authEnabled = useAuthStore((s) => s.authEnabled);
+  const username = useAuthStore((s) => s.username);
+  const logout = useAuthStore((s) => s.logout);
   const mapDevices = devicesForMap(devices, links, currentMap, hiddenDevices);
   const hiddenCount = mapDevices.filter((d) => hiddenDevices.has(d.id)).length;
   const mapLabel = maps.find((m) => m.name === currentMap)?.label || currentMap;
