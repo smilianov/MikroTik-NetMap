@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from mikrotik.tls import normalize_fingerprint
 from models import (
     DeviceConfig,
     LinkConfig,
@@ -72,12 +73,16 @@ class NetMapConfig:
         default_password = api_defaults.get("password", "")
         default_api_type = api_defaults.get("api_type", "rest")
         default_api_port = api_defaults.get("port", None)
+        default_use_ssl = bool(api_defaults.get("use_ssl", False))
+        default_tls_fingerprint = api_defaults.get("tls_fingerprint_sha256")
 
         self.api_defaults: dict = {
             "username": default_username,
             "password": default_password,
             "api_type": default_api_type,
             "port": default_api_port,
+            "use_ssl": default_use_ssl,
+            "tls_fingerprint_sha256": default_tls_fingerprint,
         }
 
         # Color thresholds.
@@ -95,9 +100,20 @@ class NetMapConfig:
                 d["api_type"] = default_api_type
             if "port" not in d and default_api_port:
                 d["port"] = default_api_port
+            if "use_ssl" not in d:
+                d["use_ssl"] = default_use_ssl
+            if "tls_fingerprint_sha256" not in d and default_tls_fingerprint:
+                d["tls_fingerprint_sha256"] = default_tls_fingerprint
             if "position" in d and isinstance(d["position"], dict):
                 d["position"] = Position(**d["position"])
-            self.devices.append(DeviceConfig(**d))
+            device = DeviceConfig(**d)
+            if device.api_type == "classic" and device.use_ssl:
+                if not device.tls_fingerprint_sha256:
+                    raise ValueError(
+                        f"Device '{device.name}': tls_fingerprint_sha256 is required"
+                    )
+                normalize_fingerprint(device.tls_fingerprint_sha256)
+            self.devices.append(device)
 
         # Maps.
         raw_maps = data.get("maps", [{"name": "main", "label": "Network Overview"}])

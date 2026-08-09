@@ -67,6 +67,10 @@ class TrafficMonitor:
                     "password": _defaults["password"],
                     "api_type": _defaults.get("api_type", d.api_type),
                     "port": _defaults.get("port") or d.port,
+                    "use_ssl": _defaults.get("use_ssl", d.use_ssl),
+                    "tls_fingerprint_sha256": _defaults.get(
+                        "tls_fingerprint_sha256", d.tls_fingerprint_sha256
+                    ),
                 })
             self.devices.append(d)
         self.interval = interval
@@ -108,6 +112,8 @@ class TrafficMonitor:
             api_type=device.api_type,
             timeout=15.0,
             ssh_key_file=device.ssh_key_file,
+            use_ssl=device.use_ssl,
+            tls_fingerprint_sha256=device.tls_fingerprint_sha256,
         )
         try:
             interfaces = await client.get_interfaces()

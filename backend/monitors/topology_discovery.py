@@ -243,6 +243,10 @@ class TopologyDiscovery:
                     "password": _defaults["password"],
                     "api_type": _defaults.get("api_type", d.api_type),
                     "port": _defaults.get("port") or d.port,
+                    "use_ssl": _defaults.get("use_ssl", d.use_ssl),
+                    "tls_fingerprint_sha256": _defaults.get(
+                        "tls_fingerprint_sha256", d.tls_fingerprint_sha256
+                    ),
                 })
             self.devices.append(d)
         self.interval = interval
@@ -313,6 +317,10 @@ class TopologyDiscovery:
             password=self._api_defaults.get("password", ""),
             api_type=self._api_defaults.get("api_type", "rest"),
             port=self._api_defaults.get("port"),
+            use_ssl=self._api_defaults.get("use_ssl", False),
+            tls_fingerprint_sha256=self._api_defaults.get(
+                "tls_fingerprint_sha256"
+            ),
         )
 
     def add_queryable_device(self, name: str, host: str) -> None:
@@ -414,6 +422,8 @@ class TopologyDiscovery:
             api_type=device.api_type,
             timeout=15.0,
             ssh_key_file=device.ssh_key_file,
+            use_ssl=device.use_ssl,
+            tls_fingerprint_sha256=device.tls_fingerprint_sha256,
         )
         try:
             neighbors = await client.get_neighbors()

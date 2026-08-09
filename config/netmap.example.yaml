@@ -38,12 +38,13 @@ thresholds:
 
 # RouterOS API defaults (applied to devices that don't override)
 # api_type: "rest" (HTTPS port 443, RouterOS 7.1+),
-#           "classic" (port 8728, RouterOS 6.49+),
+#           "classic" (pinned API-SSL port 8729, RouterOS 6.49+),
 #           "ssh" (port 22, any RouterOS — supports SSH key auth)
 api_defaults:
   username: admin
   api_type: classic          # "rest", "classic", or "ssh"
-  port: 8728
+  port: 8729
+  use_ssl: true
 
 # Device definitions
 devices:
@@ -53,6 +54,7 @@ devices:
     type: router
     profile: ccr
     password: "${CORE_ROUTER_PASS}"
+    tls_fingerprint_sha256: "${CORE_ROUTER_TLS_SHA256}"
     map: main
     position: {x: 400, y: 200}
 
@@ -61,6 +63,7 @@ devices:
     type: switch
     profile: crs
     password: "${SWITCH_PASS}"
+    tls_fingerprint_sha256: "${SWITCH_TLS_SHA256}"
     map: main
     position: {x: 400, y: 400}
 

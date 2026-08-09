@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from mikrotik.tls import PinnedTlsContext, normalize_fingerprint
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,6 +99,7 @@ class MikroTikClassicClient:
         timeout: float = 15.0,
         use_ssl: bool = False,
         plaintext_login: bool = True,
+        tls_fingerprint_sha256: str | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -104,6 +107,13 @@ class MikroTikClassicClient:
         self.password = password
         self.timeout = timeout
         self.use_ssl = use_ssl
+        self.tls_fingerprint_sha256 = (
+            normalize_fingerprint(tls_fingerprint_sha256)
+            if tls_fingerprint_sha256
+            else None
+        )
+        if self.use_ssl and not self.tls_fingerprint_sha256:
+            raise ValueError("Classic API TLS requires a SHA-256 fingerprint")
         self.plaintext_login = plaintext_login
         self._connection = None
         self._api = None
@@ -120,6 +130,11 @@ class MikroTikClassicClient:
             use_ssl=self.use_ssl,
             ssl_verify=False,
             ssl_verify_hostname=False,
+            ssl_context=(
+                PinnedTlsContext(self.tls_fingerprint_sha256)
+                if self.use_ssl and self.tls_fingerprint_sha256
+                else None
+            ),
             plaintext_login=self.plaintext_login,
         )
         self._connection.socket_timeout = self.timeout
@@ -181,6 +196,8 @@ def create_client(
     api_type: str = "rest",
     timeout: float = 15.0,
     ssh_key_file: str = "",
+    use_ssl: bool = False,
+    tls_fingerprint_sha256: str | None = None,
 ) -> "MikroTikClient | MikroTikClassicClient | MikroTikSSHClient":
     """Factory: create the right client based on api_type."""
     if api_type == "ssh":
@@ -201,6 +218,8 @@ def create_client(
             password=password,
             port=port or 8728,
             timeout=timeout,
+            use_ssl=use_ssl,
+            tls_fingerprint_sha256=tls_fingerprint_sha256,
         )
     else:
         return MikroTikClient(

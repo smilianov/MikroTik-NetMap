@@ -545,6 +545,10 @@ async def _on_topology_update(changes: dict[str, Any]) -> None:
                 password=api_defaults["password"],
                 api_type=api_defaults.get("api_type", "rest"),
                 port=api_defaults.get("port"),
+                use_ssl=api_defaults.get("use_ssl", False),
+                tls_fingerprint_sha256=api_defaults.get(
+                    "tls_fingerprint_sha256"
+                ),
             )
             traffic.add_device(traffic_config)
 
@@ -703,6 +707,10 @@ def _start_runtime_monitors(cfg: NetMapConfig) -> None:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    tls_fingerprint_sha256=cfg.api_defaults.get(
+                        "tls_fingerprint_sha256"
+                    ),
                 ))
         traffic.start()
     app_state["traffic_monitor"] = traffic
@@ -901,6 +909,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     password=cfg.api_defaults["password"],
                     api_type=cfg.api_defaults.get("api_type", "rest"),
                     port=cfg.api_defaults.get("port"),
+                    use_ssl=cfg.api_defaults.get("use_ssl", False),
+                    tls_fingerprint_sha256=cfg.api_defaults.get(
+                        "tls_fingerprint_sha256"
+                    ),
                 )
                 traffic.add_device(traffic_dev)
         traffic.start()
